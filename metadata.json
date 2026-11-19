@@ -1,0 +1,6 @@
+{
+  "name": "UMBRA: Sangue & Névoa",
+  "description": "Simulador 3D de vampiro em cidade gótica noturna com furtividade, caça estratégica, estética estilizada inspirada na era PS2 e evolução de poderes.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
