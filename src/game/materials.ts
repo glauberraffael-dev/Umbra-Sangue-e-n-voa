@@ -215,37 +215,37 @@ export function createGothicMaterialLibrary(
   const stone = applyPs2GothicShader(
     new THREE.MeshStandardMaterial({
       map: textures.stoneMap,
-      color: 0x70798f,
-      roughness: 0.92,
+      color: 0x677087,
+      roughness: 0.93,
       metalness: 0.03,
-      envMapIntensity: 0.14,
+      envMapIntensity: 0.08,
     }),
     sharedUniforms,
-    { rimColor: 0x627ab5, rimStrength: 0.2, celBands: 4.0 },
+    { rimColor: 0x5872ad, rimStrength: 0.16, celBands: 4.0 },
   );
 
   const darkStone = applyPs2GothicShader(
     new THREE.MeshStandardMaterial({
       map: textures.stoneMap,
-      color: 0x3b4254,
+      color: 0x353b4d,
       roughness: 0.95,
       metalness: 0.04,
-      envMapIntensity: 0.12,
+      envMapIntensity: 0.06,
     }),
     sharedUniforms,
-    { rimColor: 0x526594, rimStrength: 0.16, celBands: 4.0 },
+    { rimColor: 0x4b5f8f, rimStrength: 0.14, celBands: 4.0 },
   );
 
   const brick = applyPs2GothicShader(
     new THREE.MeshStandardMaterial({
       map: textures.stoneMap,
-      color: 0x522e33,
-      roughness: 0.93,
+      color: 0x4d2a2f,
+      roughness: 0.94,
       metalness: 0.02,
-      envMapIntensity: 0.07,
+      envMapIntensity: 0.05,
     }),
     sharedUniforms,
-    { rimColor: 0x6b7ab5, rimStrength: 0.15, celBands: 4.0 },
+    { rimColor: 0x6272ab, rimStrength: 0.12, celBands: 4.0 },
   );
 
   const wood = applyPs2GothicShader(
@@ -272,8 +272,8 @@ export function createGothicMaterialLibrary(
 
   const vitrine = new THREE.MeshStandardMaterial({
     color: 0x472f18,
-    emissive: 0xffa94d,
-    emissiveIntensity: 1.55,
+    emissive: 0xff9f38,
+    emissiveIntensity: 2.15,
     roughness: 0.25,
     metalness: 0.15,
     toneMapped: false,
@@ -282,13 +282,13 @@ export function createGothicMaterialLibrary(
   const roof = applyPs2GothicShader(
     new THREE.MeshStandardMaterial({
       map: textures.roofMap,
-      color: 0x455068,
-      roughness: 0.85,
-      metalness: 0.12,
-      envMapIntensity: 0.14,
+      color: 0x3b4459,
+      roughness: 0.87,
+      metalness: 0.1,
+      envMapIntensity: 0.08,
     }),
     sharedUniforms,
-    { rimColor: 0x7692d4, rimStrength: 0.22, celBands: 4.0 },
+    { rimColor: 0x6783c7, rimStrength: 0.18, celBands: 4.0 },
   );
 
   const iron = applyPs2GothicShader(
@@ -317,7 +317,7 @@ export function createGothicMaterialLibrary(
     map: textures.stainedGlassMap,
     emissiveMap: textures.stainedGlassMap,
     emissive: 0xff6b35,
-    emissiveIntensity: 1.9,
+    emissiveIntensity: 2.25,
     roughness: 0.25,
     metalness: 0.1,
     toneMapped: false,
@@ -327,7 +327,7 @@ export function createGothicMaterialLibrary(
     map: textures.roseWindowMap,
     emissiveMap: textures.roseWindowMap,
     emissive: 0xff5733,
-    emissiveIntensity: 2.1,
+    emissiveIntensity: 2.45,
     roughness: 0.2,
     metalness: 0.1,
     toneMapped: false,

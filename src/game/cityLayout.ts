@@ -222,7 +222,7 @@ export function buildGothicCity(
   scene.add(cathBridge);
   addVolume(0, 3.05, 3.6, -38.0, 16.8, 4.0, false, true);
 
-  // North Cloister Flanking Buildings & Side Gothic Wings
+  // North Cloister Flanking Buildings, Rear Abbey Row & Labyrinthine Priory Wings
   const cathedralBlocks: Array<{ x: number; z: number; w: number; h: number; d: number; spire?: boolean; roofDeckY?: number }> = [
     { x: -30, z: -58, w: 12, h: 10.5, d: 11, spire: true },
     { x: 30, z: -58, w: 12, h: 10.5, d: 11, spire: true },
@@ -230,6 +230,24 @@ export function buildGothicCity(
     { x: 54, z: -48, w: 12, h: 6.2, d: 11, roofDeckY: 6.2 },
     { x: -72, z: -56, w: 12, h: 11, d: 12 },
     { x: 72, z: -56, w: 12, h: 11, d: 12 },
+    // Rear Abbey Row (north of -73 cultist route)
+    { x: -15.5, z: -79.2, w: 11, h: 10.2, d: 6.2 },
+    { x: 0, z: -79.5, w: 12, h: 11.5, d: 6.4, spire: true },
+    { x: 15.5, z: -79.2, w: 11, h: 10.2, d: 6.2 },
+    // North-West Cloister Labyrinth (clear of -51.4..-54.8 scaffold & -56..-38 cultists)
+    { x: -41.5, z: -45.0, w: 7.4, h: 8.8, d: 8.0 },
+    { x: -39.0, z: -68.0, w: 9.5, h: 9.8, d: 9.0 },
+    { x: -58.0, z: -71.0, w: 10.0, h: 9.5, d: 8.5 },
+    { x: -74.0, z: -72.0, w: 10.0, h: 10.4, d: 9.0 },
+    { x: -78.0, z: -39.0, w: 8.5, h: 9.2, d: 9.5 },
+    { x: -65.0, z: -37.2, w: 7.0, h: 7.8, d: 6.2 },
+    // North-East Priory Quarter (clear of cryptBounds, 54.8 scaffold & 59..74 cultists)
+    { x: 41.5, z: -45.5, w: 7.4, h: 8.8, d: 8.2 },
+    { x: 39.0, z: -68.0, w: 9.5, h: 9.8, d: 9.0 },
+    { x: 58.0, z: -71.0, w: 10.0, h: 9.5, d: 8.5 },
+    { x: 75.0, z: -72.0, w: 10.0, h: 10.4, d: 9.0 },
+    { x: 75.0, z: -39.5, w: 9.0, h: 9.4, d: 7.5 },
+    { x: 64.5, z: -38.5, w: 6.8, h: 8.0, d: 6.6 },
   ];
   cathedralBlocks.forEach((b) => {
     if (b.roofDeckY) {
@@ -406,23 +424,30 @@ export function buildGothicCity(
     roofStyle?: 'pitched' | 'mansard' | 'flat';
   }> = [
     // Inner West Tenements (x = -21)
+    { x: -21.2, z: -14.5, w: 8.2, h: 9.4, d: 6.0, brick: true, hasBalcony: true, roofStyle: 'mansard' },
     { x: -21, z: -2, w: 8.5, h: 6.2, d: 10, roofDeckY: 6.2 },
     { x: -21, z: 16, w: 8.5, h: 6.2, d: 10, roofDeckY: 6.2 },
     { x: -21, z: 34, w: 9.5, h: 9.5, d: 10, brick: true, hasBalcony: true, roofStyle: 'pitched' },
 
-    // Mid West Tenement Row (x = -42)
+    // Mid West Tenement Row (x = -42) + interlocking alley annexes
+    { x: -42, z: -18.2, w: 9.2, h: 8.6, d: 4.0, brick: true, roofStyle: 'mansard' },
     { x: -42, z: -8, w: 10, h: 9.0, d: 11, brick: true, roofStyle: 'pitched' },
     { x: -42, z: 10, w: 10, h: 6.2, d: 10, roofDeckY: 6.2 },
     { x: -42, z: 30, w: 10, h: 9.8, d: 11, brick: true, hasBalcony: true, roofStyle: 'mansard' },
 
-    // Far West Old Quarter (x = -66)
+    // Far West Old Quarter (x = -66) + staggered cross-alley infill
+    { x: -66, z: -23.2, w: 10.0, h: 9.4, d: 4.6, brick: true, roofStyle: 'pitched' },
     { x: -66, z: -12, w: 11, h: 10.0, d: 12, brick: true, roofStyle: 'pitched' },
+    { x: -66, z: 0.0, w: 10.0, h: 8.8, d: 5.4, brick: false, hasBalcony: true, roofStyle: 'mansard' },
     { x: -66, z: 12, w: 10.5, h: 6.2, d: 12, roofDeckY: 6.2 },
+    { x: -66, z: 23.0, w: 9.8, h: 9.6, d: 4.4, brick: true, roofStyle: 'pitched' },
     { x: -66, z: 34, w: 11, h: 10.5, d: 12, roofStyle: 'mansard' },
 
     // Outer West Slum & Watchtower Row (x = -80, separated by x = -73 smuggling alley)
     { x: -80, z: -12, w: 9.0, h: 7.8, d: 11, roofDeckY: 7.8 },
+    { x: -79.5, z: 0.2, w: 8.0, h: 7.4, d: 5.0, brick: true, roofStyle: 'pitched' },
     { x: -80, z: 12, w: 9.0, h: 4.6, d: 11, roofDeckY: 4.6 },
+    { x: -79.5, z: 23.2, w: 8.0, h: 8.2, d: 4.4, brick: true, hasBalcony: true, roofStyle: 'mansard' },
     { x: -80, z: 34, w: 9.0, h: 10.2, d: 11, brick: true, hasBalcony: true, roofStyle: 'pitched' },
   ];
 
@@ -571,6 +596,13 @@ export function buildGothicCity(
     [-16.0, 25.0],
     [33.5, 0.0],
     [0.0, 44.5],
+    [-42.85, 76.5],
+    [42.85, 76.5],
+    [-72.8, 59.0],
+    [72.8, 59.0],
+    [-48.0, -45.0],
+    [48.0, -45.0],
+    [75.0, 11.5],
   ];
   sewerSpots.forEach(([gx, gz]) => {
     const grate = createSewerGrate(mats);
@@ -627,6 +659,10 @@ export function buildGothicCity(
     [-54.0, 19.5, 11.4, 4.2, 2.0, 0],
     [-73.2, 1.5, 7.6, 4.1, 1.8, 0],
     [-73.2, 24.5, 7.6, 4.1, 1.8, 0],
+    [-73.2, -12.0, 7.6, 4.1, 1.8, 0],
+    [-73.2, 34.0, 7.6, 4.1, 1.8, 0],
+    [-42.0, -56.0, 9.6, 4.2, 2.0, 0],
+    [41.5, -56.0, 9.6, 4.2, 2.0, 0],
     // Covered East-West Cross-Passage Arcades linking Avenue & Alleys (clear 4.7m floor path under y=6.2 catwalk)
     [-21.0, 7.0, 7.4, 3.85, 2.4, Math.PI / 2],
     [20.5, 7.0, 7.4, 3.85, 2.4, Math.PI / 2],
@@ -753,12 +789,36 @@ export function buildGothicCity(
     { x: 20.5, z: 16, w: 9, h: 6.2, d: 10, roofDeckY: 6.2 },
     { x: 20.5, z: 34, w: 9.5, h: 10.0, d: 11, brick: false, hasVitrine: true, hasBalcony: true, roofStyle: 'pitched' },
 
-    // Southern Avenue South Front (z = 76) facing North (rotY = Math.PI)
+    // Southern Avenue South Front (z = 76) facing North (rotY = Math.PI) + dense back-alley townhouses
     { x: -52, z: 76, w: 15, h: 10.5, d: 10, rotY: Math.PI, brick: true, hasVitrine: true, hasBalcony: true, roofStyle: 'mansard' },
+    { x: -37.8, z: 77.5, w: 6.8, h: 9.6, d: 8.6, rotY: Math.PI, brick: false, hasVitrine: true, roofStyle: 'pitched' },
     { x: -24, z: 76, w: 14, h: 11.2, d: 10, rotY: Math.PI, brick: false, hasVitrine: true, hasBalcony: true, roofStyle: 'pitched' },
+    { x: -12.0, z: 77.8, w: 4.4, h: 9.2, d: 8.2, rotY: Math.PI, brick: true, roofStyle: 'mansard' },
     { x: 0, z: 77, w: 14, h: 12.0, d: 10, rotY: Math.PI, brick: true, hasVitrine: true, hasBalcony: true, roofStyle: 'mansard' },
+    { x: 12.0, z: 77.8, w: 4.4, h: 9.2, d: 8.2, rotY: Math.PI, brick: true, roofStyle: 'mansard' },
     { x: 24, z: 76, w: 14, h: 10.8, d: 10, rotY: Math.PI, brick: false, hasVitrine: true, hasBalcony: true, roofStyle: 'pitched' },
+    { x: 37.8, z: 77.5, w: 6.8, h: 9.6, d: 8.6, rotY: Math.PI, brick: false, hasVitrine: true, roofStyle: 'pitched' },
     { x: 52, z: 76, w: 15, h: 10.5, d: 10, rotY: Math.PI, brick: true, hasVitrine: true, hasBalcony: true, roofStyle: 'mansard' },
+
+    // West & East Flanking Quarters off Southern Boulevard (creating tight 3.2m-4.5m side warrens)
+    { x: -66.5, z: 53.5, w: 8.2, h: 9.8, d: 7.6, brick: true, roofStyle: 'pitched' },
+    { x: -66.5, z: 64.5, w: 8.2, h: 10.4, d: 7.6, brick: false, hasBalcony: true, roofStyle: 'mansard' },
+    { x: -67.0, z: 76.5, w: 8.6, h: 10.0, d: 8.8, rotY: Math.PI, brick: true, hasVitrine: true, roofStyle: 'pitched' },
+    { x: -79.5, z: 53.0, w: 8.8, h: 9.4, d: 8.0, brick: false, roofStyle: 'mansard' },
+    { x: -79.5, z: 65.0, w: 8.8, h: 10.8, d: 8.0, brick: true, hasBalcony: true, roofStyle: 'pitched' },
+    { x: -79.5, z: 76.5, w: 8.8, h: 9.8, d: 8.6, rotY: Math.PI, brick: false, roofStyle: 'mansard' },
+    { x: 66.5, z: 53.5, w: 8.2, h: 9.8, d: 7.6, brick: true, roofStyle: 'pitched' },
+    { x: 66.5, z: 64.5, w: 8.2, h: 10.4, d: 7.6, brick: false, hasBalcony: true, roofStyle: 'mansard' },
+    { x: 67.0, z: 76.5, w: 8.6, h: 10.0, d: 8.8, rotY: Math.PI, brick: true, hasVitrine: true, roofStyle: 'pitched' },
+    { x: 79.5, z: 53.0, w: 8.8, h: 9.4, d: 8.0, brick: false, roofStyle: 'mansard' },
+    { x: 79.5, z: 65.0, w: 8.8, h: 10.8, d: 8.0, brick: true, hasBalcony: true, roofStyle: 'pitched' },
+    { x: 79.5, z: 76.5, w: 8.8, h: 9.8, d: 8.6, rotY: Math.PI, brick: false, roofStyle: 'mansard' },
+
+    // Manor Rear Outbuildings & Servants' Quarters (East Sector)
+    { x: 77.5, z: -15.5, w: 11.0, h: 9.0, d: 9.0, brick: true, roofStyle: 'mansard' },
+    { x: 77.5, z: 18.0, w: 11.0, h: 9.2, d: 9.0, brick: false, roofStyle: 'pitched' },
+    { x: 77.5, z: 33.5, w: 11.0, h: 9.8, d: 9.5, brick: true, hasBalcony: true, roofStyle: 'mansard' },
+    { x: 64.5, z: 38.5, w: 7.6, h: 8.8, d: 7.6, brick: false, roofStyle: 'pitched' },
 
     // Southern Gatehouse Bastions framing Southern Boulevard
     { x: -32, z: 58, w: 6.5, h: 10.0, d: 6.5, roofStyle: 'pitched' },
@@ -804,6 +864,26 @@ export function buildGothicCity(
   eastRoofCatwalk.position.set(20.5, 0, 7.0);
   scene.add(eastRoofCatwalk);
   addVolume(20.5, 5.65, 6.2, 7.0, 4.2, 8.4, false, true);
+
+  // Overhead Roof-to-Roof Street Bridges framing First-Person Sightlines Across Narrow Back-Alleys
+  [
+    [-21.2, 4.2, -9.2, 4.0, 4.6],
+    [-66.0, 4.2, -4.4, 3.8, 3.8],
+    [-66.0, 4.2, 4.4, 3.8, 3.8],
+    [-48.0, 4.4, -45.0, 6.2, 3.2],
+    [48.0, 4.4, -45.0, 6.2, 3.2],
+    [-42.85, 4.2, 77.5, 3.6, 3.2],
+    [42.85, 4.2, 77.5, 3.6, 3.2],
+    [-15.6, 4.2, 77.5, 3.0, 2.8],
+    [15.6, 4.2, 77.5, 3.0, 2.8],
+    [-72.8, 4.4, 59.0, 4.8, 3.4],
+    [72.8, 4.4, 59.0, 4.8, 3.4],
+    [-72.8, 4.6, 76.5, 4.2, 3.2],
+    [72.8, 4.6, 76.5, 4.2, 3.2],
+  ].forEach(([bx, bh, bz, bw, bd]) => {
+    addElevatedWalkway(bx, bh, bz, bw, bd, { withRailings: true });
+    shadowZones.push({ x: bx, y: 0, z: bz, radius: 4.5 });
+  });
 
   // North Bridge (y=4.0) -> Flat Roofs (y=6.2) flush step-up connectors (y = 5.05m)
   [-15.35, 14.6].forEach((wx) => {
@@ -1152,6 +1232,13 @@ export function buildGothicCity(
     { x: 48, y: 0, z: 0, radius: 6.0 },
     { x: 60, y: 0, z: 18, radius: 5.0 },
     { x: 0, y: 0, z: -72, radius: 6.5 },
+    { x: 75, y: 0, z: -9, radius: 4.8 },
+    { x: 75, y: 0, z: 11.5, radius: 4.8 },
+    { x: 75, y: 0, z: 25.5, radius: 5.0 },
+    { x: -72.8, y: 0, z: 59.0, radius: 5.2 },
+    { x: 72.8, y: 0, z: 59.0, radius: 5.2 },
+    { x: -42.85, y: 0, z: 77.5, radius: 4.5 },
+    { x: 42.85, y: 0, z: 77.5, radius: 4.5 },
   );
 
   // =========================================================================

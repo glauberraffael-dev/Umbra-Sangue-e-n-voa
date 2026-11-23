@@ -1564,7 +1564,7 @@ export function createStreetLamp(
   const lightConeMat = new THREE.MeshBasicMaterial({
     vertexColors: true,
     transparent: true,
-    opacity: 0.15,
+    opacity: 0.19,
     blending: THREE.AdditiveBlending,
     depthWrite: false,
     side: THREE.DoubleSide,
@@ -1577,13 +1577,13 @@ export function createStreetLamp(
     map: textures.lampPoolMap,
     transparent: true,
     depthWrite: false,
-    opacity: 0.62,
+    opacity: 0.68,
   });
-  const poolMesh = new THREE.Mesh(new THREE.PlaneGeometry(14.5, 14.5), poolMat);
+  const poolMesh = new THREE.Mesh(new THREE.PlaneGeometry(15.5, 15.5), poolMat);
   poolMesh.rotation.x = -Math.PI / 2;
   poolMesh.position.y = 0.03;
 
-  const pointLight = new THREE.PointLight(0xff9b3d, 28, 17.5, 2.0);
+  const pointLight = new THREE.PointLight(0xff9436, 36, 19.0, 1.85);
   pointLight.position.set(0, 4.8, 0);
 
   group.add(base, pole, collar, cap, flameMesh, lightConeMesh, poolMesh, pointLight);

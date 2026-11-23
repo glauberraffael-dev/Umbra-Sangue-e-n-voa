@@ -69,6 +69,11 @@ const _camLook = new THREE.Vector3();
 const _dummy = new THREE.Object3D();
 const _color = new THREE.Color();
 const _color2 = new THREE.Color();
+const _color3 = new THREE.Color();
+const _skyZenithTarget = new THREE.Color();
+const _dawnGlowTarget = new THREE.Color();
+const _sunStartPos = new THREE.Vector3(-28, 52, -32);
+const _sunDawnPos = new THREE.Vector3(68, 22, -16);
 
 interface NpcEntity {
   id: number;
@@ -427,11 +432,21 @@ export class VampireGameEngine {
   private npcs: NpcEntity[] = [];
   private ambientBats: THREE.Mesh[] = [];
 
-  // Lighting, Fog & Dynamic Weather
+  // Lighting, SkyDome, Fog & Dynamic Weather
   private hemiLight!: THREE.HemisphereLight;
   private moonLight!: THREE.DirectionalLight;
   private rimLight!: THREE.DirectionalLight;
-  private fogColor = new THREE.Color(0x0c0e24);
+  private skyDome!: THREE.Mesh;
+  private skyMat!: THREE.ShaderMaterial;
+  private skyUniforms!: {
+    uZenithColor: { value: THREE.Color };
+    uHorizonColor: { value: THREE.Color };
+    uDawnGlowColor: { value: THREE.Color };
+    uSunDir: { value: THREE.Vector3 };
+    uDawnAmount: { value: number };
+    uTime: { value: number };
+  };
+  private fogColor = new THREE.Color(0x03050d);
   private sceneFog!: THREE.FogExp2;
   private weather: WeatherType = 'clear';
   private weatherSchedule: WeatherType[] = ['clear', 'fog', 'rain', 'fog', 'rain', 'clear'];
@@ -638,7 +653,7 @@ export class VampireGameEngine {
     });
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.12;
+    this.renderer.toneMappingExposure = 1.02;
     this.renderer.setPixelRatio(this.isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, 2));
     this.renderer.setSize(
       container.clientWidth || window.innerWidth,
@@ -650,25 +665,96 @@ export class VampireGameEngine {
 
     this.scene = new THREE.Scene();
     this.scene.background = this.fogColor;
-    this.sceneFog = new THREE.FogExp2(0x0c0e24, 0.0145);
+    this.sceneFog = new THREE.FogExp2(0x03050d, 0.0175);
     this.scene.fog = this.sceneFog;
 
     const pmrem = new THREE.PMREMGenerator(this.renderer);
     this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    this.scene.environmentIntensity = 0.24;
     pmrem.dispose();
 
     const width = container.clientWidth || window.innerWidth;
     const height = container.clientHeight || window.innerHeight;
-    this.camera = new THREE.PerspectiveCamera(66, width / height, 0.08, 260);
+    this.camera = new THREE.PerspectiveCamera(66, width / height, 0.08, 280);
     this.camera.rotation.order = 'YXZ';
     this.scene.add(this.camera);
 
-    // 3-Point Nocturnal Lighting Rig (high light-vs-shadow contrast)
-    this.hemiLight = new THREE.HemisphereLight(0x4b5ca3, 0x090b16, 0.4);
+    // Nocturnal-to-Dawn Atmospheric Sky Dome
+    this.skyUniforms = {
+      uZenithColor: { value: new THREE.Color(0x020308) },
+      uHorizonColor: { value: new THREE.Color(0x03050d) },
+      uDawnGlowColor: { value: new THREE.Color(0x7c2d12) },
+      uSunDir: { value: new THREE.Vector3(1.0, 0.22, -0.25).normalize() },
+      uDawnAmount: { value: 0.0 },
+      uTime: { value: 0.0 },
+    };
+    this.skyMat = new THREE.ShaderMaterial({
+      uniforms: this.skyUniforms,
+      side: THREE.BackSide,
+      depthWrite: false,
+      fog: false,
+      vertexShader: `
+        varying vec3 vWorldDir;
+        void main() {
+          vWorldDir = normalize(position);
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform vec3 uZenithColor;
+        uniform vec3 uHorizonColor;
+        uniform vec3 uDawnGlowColor;
+        uniform vec3 uSunDir;
+        uniform float uDawnAmount;
+        uniform float uTime;
+        varying vec3 vWorldDir;
+
+        float hash31(vec3 p) {
+          p = fract(p * 0.1031);
+          p += dot(p, p.yzx + 33.33);
+          return fract((p.x + p.y) * p.z);
+        }
+
+        void main() {
+          vec3 dir = normalize(vWorldDir);
+          float elev = clamp(dir.y, 0.0, 1.0);
+          vec3 sky = mix(uHorizonColor, uZenithColor, pow(elev, 0.52));
+
+          // Faint nocturnal stars that dissolve cleanly as dawn approaches
+          float nightMask = 1.0 - smoothstep(0.05, 0.48, uDawnAmount);
+          if (nightMask > 0.01 && elev > 0.12) {
+            vec3 cell = floor(dir * 160.0);
+            float h = hash31(cell);
+            if (h > 0.992) {
+              float twinkle = 0.6 + 0.4 * sin(uTime * 1.8 + h * 120.0);
+              float starIntensity = smoothstep(0.12, 0.35, elev) * nightMask * twinkle * 0.85;
+              sky += vec3(0.75, 0.84, 1.0) * starIntensity;
+            }
+          }
+
+          // Eastern pre-dawn horizon band & rising sun halo
+          float sunDot = max(dot(dir, normalize(uSunDir)), 0.0);
+          float horizonBand = exp(-elev * 5.2);
+          float eastMask = smoothstep(-0.2, 0.85, dir.x);
+          sky += uDawnGlowColor * horizonBand * (0.25 + 0.75 * eastMask) * uDawnAmount * 1.15;
+          sky += uDawnGlowColor * pow(sunDot, 10.0) * uDawnAmount * 0.95;
+          sky += vec3(1.0, 0.82, 0.58) * pow(sunDot, 72.0) * smoothstep(0.5, 1.0, uDawnAmount) * 1.1;
+
+          gl_FragColor = vec4(sky, 1.0);
+        }
+      `,
+    });
+    this.skyDome = new THREE.Mesh(new THREE.SphereGeometry(215, 24, 14), this.skyMat);
+    this.skyDome.renderOrder = -10;
+    this.skyDome.frustumCulled = false;
+    this.scene.add(this.skyDome);
+
+    // 3-Point Nocturnal Lighting Rig (deep midnight shadow contrast -> sharp lamp pools)
+    this.hemiLight = new THREE.HemisphereLight(0x1c2852, 0x04050c, 0.18);
     this.scene.add(this.hemiLight);
 
-    this.moonLight = new THREE.DirectionalLight(0x9bb7ff, 0.98);
-    this.moonLight.position.set(-28, 52, -32);
+    this.moonLight = new THREE.DirectionalLight(0x6b88cc, 0.48);
+    this.moonLight.position.copy(_sunStartPos);
     this.moonLight.castShadow = !this.isSoftwareGl;
     this.moonLight.shadow.mapSize.width = 2048;
     this.moonLight.shadow.mapSize.height = 2048;
@@ -683,7 +769,7 @@ export class VampireGameEngine {
     this.moonLight.shadow.normalBias = 0.02;
     this.scene.add(this.moonLight);
 
-    this.rimLight = new THREE.DirectionalLight(0x6366f1, 0.32);
+    this.rimLight = new THREE.DirectionalLight(0x3b4899, 0.15);
     this.rimLight.position.set(30, 20, 40);
     this.scene.add(this.rimLight);
 
@@ -1547,6 +1633,7 @@ export class VampireGameEngine {
     }
 
     this.spawnNpcsForNight(1);
+    this.updateWeather(10.0, false);
     this.showBanner(
       `Noite I — Cripta Segura (Adro da Catedral). Alvo Principal: ${this.mainTargetName}.`,
       4.5,
@@ -1573,6 +1660,7 @@ export class VampireGameEngine {
     this.weather = this.weatherSchedule[this.weatherIndex];
     this.weatherTimer = 0;
     this.weatherDuration = 36;
+    this.updateWeather(10.0, false);
     this.health = Math.min(this.maxHealth, this.health + 35);
     this.blood = Math.min(this.maxBlood, Math.max(this.blood, 75));
 
@@ -1793,7 +1881,7 @@ export class VampireGameEngine {
     }
 
     const targetFogDensity =
-      this.weather === 'fog' ? 0.036 : this.weather === 'rain' ? 0.022 : 0.0145;
+      this.weather === 'fog' ? 0.042 : this.weather === 'rain' ? 0.025 : 0.0175;
     const targetVisionMult =
       this.weather === 'fog' ? 0.62 : this.weather === 'rain' ? 0.88 : 1.0;
     const targetNoiseMult =
@@ -1807,24 +1895,76 @@ export class VampireGameEngine {
     this.rainIntensity = THREE.MathUtils.damp(this.rainIntensity, targetRain, 1.6, dt);
     this.fogIntensity = THREE.MathUtils.damp(this.fogIntensity, targetFog, 1.4, dt);
 
-    // Nocturnal blue-purple atmospheric fog shifting faintly toward dawn amber when 05:00 approaches
-    const targetBgHex =
-      this.weather === 'fog' ? 0x141634 : this.weather === 'rain' ? 0x090b1b : 0x0c0e24;
-    _color.setHex(targetBgHex);
+    // Progressive Night (00:00) -> Pre-Dawn Twilight -> Crimson-Amber Aurora (05:00)
     const nightProgress = Math.min(1, this.nightTimer / Math.max(1, this.nightDuration));
-    if (nightProgress > 0.82) {
-      const dawnBlend = THREE.MathUtils.clamp((nightProgress - 0.82) / 0.18, 0, 1) * 0.45;
-      _color.lerp(_color2.setHex(0x4c2429), dawnBlend);
-    }
-    this.fogColor.lerp(_color, Math.min(1, dt * 1.4));
+    const preDawnT = THREE.MathUtils.smoothstep(nightProgress, 0.60, 0.84);
+    const dawnBreakT = THREE.MathUtils.smoothstep(nightProgress, 0.80, 0.96);
+    const sunriseT = THREE.MathUtils.smoothstep(nightProgress, 0.94, 1.0);
+    const dawnAmount = THREE.MathUtils.clamp(preDawnT * 0.25 + dawnBreakT * 0.55 + sunriseT * 0.35, 0, 1);
+
+    const targetBgHex =
+      this.weather === 'fog' ? 0x070a18 : this.weather === 'rain' ? 0x020309 : 0x03050d;
+    _color.setHex(targetBgHex);
+    _color.lerp(_color2.setHex(0x1b1429), preDawnT * 0.85);
+    _color.lerp(_color2.setHex(0x5c262a), dawnBreakT * 0.85);
+    _color.lerp(_color2.setHex(0x9e5942), sunriseT * 0.9);
+    this.fogColor.lerp(_color, Math.min(1, dt * 1.8));
     this.sceneFog.color.copy(this.fogColor);
 
-    const targetMoon =
-      this.weather === 'fog' ? 0.78 : this.weather === 'rain' ? 0.85 : 1.02;
-    this.moonLight.intensity = THREE.MathUtils.damp(this.moonLight.intensity, targetMoon, 1.4, dt);
-    const targetHemi =
-      this.weather === 'fog' ? 0.56 : this.weather === 'rain' ? 0.36 : 0.42;
-    this.hemiLight.intensity = THREE.MathUtils.damp(this.hemiLight.intensity, targetHemi, 1.4, dt);
+    // Sync sky dome zenith, horizon & eastern dawn glow
+    _skyZenithTarget.setHex(this.weather === 'fog' ? 0x050712 : 0x020308);
+    _skyZenithTarget.lerp(_color3.setHex(0x111a36), preDawnT);
+    _skyZenithTarget.lerp(_color3.setHex(0x2d3f6b), dawnBreakT * 0.85 + sunriseT * 0.15);
+    this.skyUniforms.uZenithColor.value.lerp(_skyZenithTarget, Math.min(1, dt * 1.8));
+    this.skyUniforms.uHorizonColor.value.copy(this.fogColor);
+
+    _dawnGlowTarget.setHex(0x4c1d3d);
+    _dawnGlowTarget.lerp(_color3.setHex(0xc2410c), dawnBreakT);
+    _dawnGlowTarget.lerp(_color3.setHex(0xfbbf24), sunriseT * 0.7);
+    this.skyUniforms.uDawnGlowColor.value.lerp(_dawnGlowTarget, Math.min(1, dt * 1.8));
+    this.skyUniforms.uDawnAmount.value = THREE.MathUtils.damp(
+      this.skyUniforms.uDawnAmount.value,
+      dawnAmount,
+      1.8,
+      dt,
+    );
+    this.skyUniforms.uTime.value = this.sharedUniforms.uTime.value;
+
+    // Directional Moon -> Low Eastern Dawn Sun
+    const baseMoonIntensity =
+      this.weather === 'fog' ? 0.32 : this.weather === 'rain' ? 0.38 : 0.48;
+    const targetDirIntensity = THREE.MathUtils.lerp(baseMoonIntensity, 1.75, dawnBreakT * 0.65 + sunriseT * 0.35);
+    this.moonLight.intensity = THREE.MathUtils.damp(this.moonLight.intensity, targetDirIntensity, 1.6, dt);
+
+    _color.setHex(0x6b88cc);
+    _color.lerp(_color2.setHex(0xf49d6b), dawnBreakT);
+    _color.lerp(_color2.setHex(0xffcf88), sunriseT);
+    this.moonLight.color.lerp(_color, Math.min(1, dt * 1.8));
+    this.moonLight.position.lerpVectors(_sunStartPos, _sunDawnPos, dawnBreakT * 0.75 + sunriseT * 0.25);
+
+    // Ambient Hemisphere & Rim fill
+    const baseHemi =
+      this.weather === 'fog' ? 0.24 : this.weather === 'rain' ? 0.15 : 0.18;
+    const targetHemi = THREE.MathUtils.lerp(baseHemi, 0.82, preDawnT * 0.25 + dawnBreakT * 0.5 + sunriseT * 0.25);
+    this.hemiLight.intensity = THREE.MathUtils.damp(this.hemiLight.intensity, targetHemi, 1.6, dt);
+    _color.setHex(0x1c2852).lerp(_color2.setHex(0x9e635b), dawnBreakT * 0.75 + sunriseT * 0.25);
+    this.hemiLight.color.lerp(_color, Math.min(1, dt * 1.8));
+    _color.setHex(0x04050c).lerp(_color2.setHex(0x261a1e), dawnBreakT * 0.8 + sunriseT * 0.2);
+    this.hemiLight.groundColor.lerp(_color, Math.min(1, dt * 1.8));
+
+    _color.setHex(0x3b4899).lerp(_color2.setHex(0xf59e6b), dawnBreakT * 0.8 + sunriseT * 0.2);
+    this.rimLight.color.lerp(_color, Math.min(1, dt * 1.8));
+    this.rimLight.intensity = THREE.MathUtils.damp(
+      this.rimLight.intensity,
+      THREE.MathUtils.lerp(0.15, 0.34, dawnBreakT * 0.7 + sunriseT * 0.3),
+      1.6,
+      dt,
+    );
+
+    const targetEnv = THREE.MathUtils.lerp(0.24, 0.68, preDawnT * 0.25 + dawnBreakT * 0.45 + sunriseT * 0.3);
+    this.scene.environmentIntensity = THREE.MathUtils.damp(this.scene.environmentIntensity, targetEnv, 1.6, dt);
+    const targetExposure = THREE.MathUtils.lerp(1.02, 1.14, dawnBreakT * 0.6 + sunriseT * 0.4);
+    this.renderer.toneMappingExposure = THREE.MathUtils.damp(this.renderer.toneMappingExposure, targetExposure, 1.5, dt);
 
     // Matte rough cobblestones with subtle sheen reserved exclusively for isolated puddles
     const targetCobbleRough = THREE.MathUtils.lerp(0.96, 0.91, this.rainIntensity);
@@ -2536,7 +2676,7 @@ export class VampireGameEngine {
 
     for (const lamp of this.world.lamps) {
       if (lamp.isLit) {
-        lamp.pointLight.intensity = 26.5 + Math.sin(t * 7 + lamp.id) * 1.8;
+        lamp.pointLight.intensity = 36.5 + Math.sin(t * 7 + lamp.id) * 2.2;
       } else if (lamp.extinguishTimer > 0) {
         lamp.extinguishTimer -= dt;
         if (lamp.extinguishTimer <= 0) {
@@ -7190,6 +7330,7 @@ export class VampireGameEngine {
       }
     });
     this.composer?.dispose();
+    this.skyMat.dispose();
     this.rainMat.dispose();
     this.shadowDecoyBodyMat.dispose();
     this.shadowDecoyRingMat.dispose();
