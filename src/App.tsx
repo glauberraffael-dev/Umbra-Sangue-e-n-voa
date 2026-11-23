@@ -22,6 +22,7 @@ const INITIAL_HUD: HudSnapshot = {
   blood: 92,
   maxBlood: 100,
   essence: 35,
+  pendingEssence: 0,
   exposure: 10,
   shadowImmersion: 0,
   noiseLevel: 0,
@@ -46,6 +47,7 @@ const INITIAL_HUD: HudSnapshot = {
     cemetery: 0,
   },
   isInSafeSanctuary: true,
+  isInSafeCemetery: false,
   isCrouching: false,
   isInShadow: true,
   isCrimsonSense: false,
@@ -55,6 +57,7 @@ const INITIAL_HUD: HudSnapshot = {
   isFalseVisage: false,
   isAstralScout: false,
   isAbyssalShroud: false,
+  isShadowDecoyActive: false,
   powerRegenRemaining: 0,
   isFeeding: false,
   feedProgress: 0,
@@ -69,6 +72,10 @@ const INITIAL_HUD: HudSnapshot = {
   isDawnApproaching: false,
   isDawnBurn: false,
   canCompleteNight: false,
+  cryptDistance: 0,
+  cryptBearingDeg: 0,
+  showCryptCompass: false,
+  lastNightSummary: null,
   mainTargetName: 'Lorde Valerius',
   mainTargetDistrict: DISTRICT_META.cemetery.name,
   mainTargetDefeated: false,
@@ -86,10 +93,14 @@ const INITIAL_HUD: HudSnapshot = {
     shadowSnareMax: 9.0,
     abyssalShroud: 0,
     abyssalShroudMax: 16.0,
+    darknessPulse: 0,
+    darknessPulseMax: 15.0,
     obfuscate: 0,
     obfuscateMax: 13.0,
     falseVisage: 0,
     falseVisageMax: 15.0,
+    shadowDecoy: 0,
+    shadowDecoyMax: 13.0,
     astralScout: 0,
     astralScoutMax: 2.0,
     dominate: 0,
@@ -224,6 +235,7 @@ export default function App() {
       {phase === 'grimoire' && (
         <EvolutionModal
           essence={hud.essence}
+          pendingEssence={hud.pendingEssence}
           disciplines={hud.disciplines}
           unlockedSkills={hud.unlockedSkills}
           equippedPowers={hud.equippedPowers}

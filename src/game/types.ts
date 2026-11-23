@@ -24,7 +24,9 @@ export type ActivePowerId =
   | 'mistForm'
   | 'celerity'
   | 'shadowLeap'
-  | 'shadowThrow';
+  | 'shadowThrow'
+  | 'shadowDecoy'
+  | 'darknessPulse';
 
 export type HotkeyBindings = Record<ActivePowerId, string>;
 
@@ -45,8 +47,10 @@ export const DEFAULT_HOTKEYS: HotkeyBindings = {
   snuffLamp: 'KeyE',
   shadowSnare: 'Digit4',
   abyssalShroud: 'Digit5',
+  darknessPulse: 'KeyJ',
   obfuscate: 'Digit1',
   falseVisage: 'Digit6',
+  shadowDecoy: 'KeyH',
   crimsonSense: 'KeyV',
   astralScout: 'KeyT',
   dominate: 'Digit2',
@@ -282,6 +286,32 @@ export const ACTIVE_POWER_LIST: ActivePowerMeta[] = [
     cooldownSec: 5.0,
     description: 'Dispara lâmina sombria (26m) que quebra urnas, apaga lampiões ou atordoa sentinelas.',
   },
+  {
+    id: 'shadowDecoy',
+    discipline: 'ofuscacao',
+    minTier: 3,
+    requiredNodeId: 'ofu_3b',
+    name: 'Simulacro Sombrio',
+    shortName: 'Simulacro',
+    bloodCostLabel: '12 Sangue',
+    bloodCostValue: 12,
+    iconKey: 'decoy',
+    cooldownSec: 13.0,
+    description: 'Conjura um duplo sombrio à frente por 7.5s que atrai guardas e civis para investigá-lo.',
+  },
+  {
+    id: 'darknessPulse',
+    discipline: 'tenebrosidade',
+    minTier: 3,
+    requiredNodeId: 'ten_3b',
+    name: 'Pulso de Escuridão',
+    shortName: 'Pulso Sombrio',
+    bloodCostLabel: '16 Sangue',
+    bloodCostValue: 16,
+    iconKey: 'pulse',
+    cooldownSec: 15.0,
+    description: 'Onda sombria (13m) que apaga lampiões, ergue fumaça espessa e atordoa perseguidores para fuga em becos.',
+  },
 ];
 
 export function formatKeyCodeLabel(code: string): string {
@@ -296,7 +326,7 @@ export function formatKeyCodeLabel(code: string): string {
   return code;
 }
 
-export type SkillBranchSlot = '1' | '2A' | '2B' | '3' | 'amalgam';
+export type SkillBranchSlot = '1' | '2A' | '2B' | '3' | '3B' | 'amalgam';
 
 export interface SkillNodeDef {
   id: string;
@@ -599,6 +629,20 @@ export const SKILL_TREE_NODES: SkillNodeDef[] = [
     summary: 'Trevas densas por 6.5s: zera exposição à luz, apaga lampiões a 9m e fortalece Passo Sombrio.',
     iconKey: 'shroud',
   },
+  {
+    id: 'ten_3b',
+    discipline: 'tenebrosidade',
+    slot: '3B',
+    tierNum: 3,
+    name: 'Pulso de Escuridão',
+    cost: 80,
+    bloodCost: '16 Sangue',
+    powerType: 'Ativo',
+    linkedPower: 'darknessPulse',
+    prereqGroups: [['ten_2a'], ['ten_2b']],
+    summary: 'Onda abissal (13m) para escapar em becos: apaga lampiões, atordoa perseguidores e cria véu sombrio.',
+    iconKey: 'pulse',
+  },
 
   // 2. Ofuscação
   {
@@ -654,6 +698,20 @@ export const SKILL_TREE_NODES: SkillNodeDef[] = [
     prereqGroups: [['ofu_2a'], ['ofu_2b']],
     summary: 'Ofuscação ganha silêncio absoluto, -60% exposição passiva e +25% Essência em abates ocultos.',
     iconKey: 'fade',
+  },
+  {
+    id: 'ofu_3b',
+    discipline: 'ofuscacao',
+    slot: '3B',
+    tierNum: 3,
+    name: 'Simulacro Sombrio',
+    cost: 95,
+    bloodCost: '12 Sangue',
+    powerType: 'Ativo',
+    linkedPower: 'shadowDecoy',
+    prereqGroups: [['ofu_2a'], ['ofu_2b']],
+    summary: 'Projeta um duplo ilusório por 7.5s que desvia olhares e atrai patrulhas para longe da sua rota.',
+    iconKey: 'decoy',
   },
 
   // 3. Auspícios
@@ -881,6 +939,19 @@ export const SKILL_TREE_NODES: SkillNodeDef[] = [
     summary: 'Celeridade dura 8s (+55% velocidade), +25% impulsão de salto e +20% dano nas garras.',
     iconKey: 'apex',
   },
+  {
+    id: 'rap_3b',
+    discipline: 'rapidez',
+    slot: '3B',
+    tierNum: 3,
+    name: 'Bote das Cornijas',
+    cost: 105,
+    bloodCost: 'Passivo',
+    powerType: 'Aprimoramento',
+    prereqGroups: [['rap_2a'], ['rap_2b']],
+    summary: 'Ataque/drenagem furtiva das alturas (até 11.5m): alcance ampliado, queda silenciosa, +20 Essência e +14 Sangue.',
+    iconKey: 'plunge',
+  },
 ];
 
 export const AMALGAM_NODES: SkillNodeDef[] = [
@@ -977,6 +1048,25 @@ export const AMALGAM_NODES: SkillNodeDef[] = [
       ['ten_2b', 'rap_2b'],
     ],
     summary: 'Tenebrosidade + Rapidez: Arremesso Sombrio aplica Laço das Sombras (2.5s) e reduz recarga de Passo Sombrio.',
+    iconKey: 'amalgam',
+  },
+  {
+    id: 'amal_nocturnal_stalker',
+    discipline: 'ofuscacao',
+    secondaryDiscipline: 'auspicios',
+    slot: 'amalgam',
+    tierNum: 2,
+    name: 'Caçador das Cornijas',
+    cost: 75,
+    bloodCost: 'Amálgama',
+    powerType: 'Amálgama',
+    prereqGroups: [
+      ['ofu_2a', 'aus_2a'],
+      ['ofu_2a', 'aus_2b'],
+      ['ofu_2b', 'aus_2a'],
+      ['ofu_2b', 'aus_2b'],
+    ],
+    summary: 'Ofuscação + Auspícios: Bote das Cornijas oculta o corpo nas sombras após drenar e amplia o alcance vertical em +1.5m.',
     iconKey: 'amalgam',
   },
 ];
@@ -1610,6 +1700,7 @@ export interface HudSnapshot {
   blood: number;
   maxBlood: number;
   essence: number;
+  pendingEssence: number;
   exposure: number; // 0 (deep shadow) to 100 (exposed in bright light / spotted)
   shadowImmersion: number; // 0 (lit) to 1 (immersed in deep shadows)
   noiseLevel: number; // 0 (silent) to 100 (loud)
@@ -1629,6 +1720,7 @@ export interface HudSnapshot {
   currentDistrictInfamy: number;
   districtInfamy: Record<DistrictId, number>;
   isInSafeSanctuary: boolean;
+  isInSafeCemetery: boolean;
   isCrouching: boolean;
   isInShadow: boolean;
   isCrimsonSense: boolean;
@@ -1638,6 +1730,7 @@ export interface HudSnapshot {
   isFalseVisage: boolean;
   isAstralScout: boolean;
   isAbyssalShroud: boolean;
+  isShadowDecoyActive: boolean;
   powerRegenRemaining: number;
   isFeeding: boolean;
   feedProgress: number;
@@ -1652,6 +1745,18 @@ export interface HudSnapshot {
   isDawnApproaching: boolean;
   isDawnBurn: boolean;
   canCompleteNight: boolean;
+  cryptDistance: number;
+  cryptBearingDeg: number;
+  showCryptCompass: boolean;
+  lastNightSummary: {
+    nightNumber: number;
+    kills: number;
+    quota: number;
+    quotaMet: boolean;
+    essenceConsolidated: number;
+    quotaBonus: number;
+    infamyReliefPct: number;
+  } | null;
   mainTargetName: string;
   mainTargetDistrict: string;
   mainTargetDefeated: boolean;
@@ -1669,10 +1774,14 @@ export interface HudSnapshot {
     shadowSnareMax: number;
     abyssalShroud: number;
     abyssalShroudMax: number;
+    darknessPulse: number;
+    darknessPulseMax: number;
     obfuscate: number;
     obfuscateMax: number;
     falseVisage: number;
     falseVisageMax: number;
+    shadowDecoy: number;
+    shadowDecoyMax: number;
     astralScout: number;
     astralScoutMax: number;
     dominate: number;

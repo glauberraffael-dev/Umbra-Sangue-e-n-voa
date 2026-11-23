@@ -145,6 +145,15 @@ export function GameHud({
           cd = hud.cooldowns.shadowThrow;
           cdMax = hud.cooldowns.shadowThrowMax;
           break;
+        case 'shadowDecoy':
+          cd = hud.cooldowns.shadowDecoy;
+          cdMax = hud.cooldowns.shadowDecoyMax;
+          active = hud.isShadowDecoyActive;
+          break;
+        case 'darknessPulse':
+          cd = hud.cooldowns.darknessPulse;
+          cdMax = hud.cooldowns.darknessPulseMax;
+          break;
       }
 
       return {
@@ -236,6 +245,37 @@ export function GameHud({
                 {hud.killsThisNight}/{hud.quotaThisNight}
               </strong>
             </span>
+          </div>
+
+          {/* Night Progression Bar (00:00 -> 05:00 Aurora) */}
+          <div className="mb-2" title="Avanço da Noite até 05:00 - Aurora">
+            <div className="flex items-center justify-between text-[9px] uppercase tracking-[0.14em] mb-0.5 text-[#94a3b8]">
+              <span>00:00</span>
+              <span
+                className={
+                  hud.isDawnBurn
+                    ? 'text-[#f87171] font-semibold'
+                    : hud.isDawnApproaching
+                    ? 'text-[#fbbf24]'
+                    : 'text-[#818cf8]'
+                }
+              >
+                {hud.isDawnBurn ? 'Aurora Ativa' : hud.isDawnApproaching ? 'Alvorada Próxima' : 'Vigília Noturna'}
+              </span>
+              <span>05:00</span>
+            </div>
+            <div className={`h-1 border overflow-hidden ${barTrackClass}`}>
+              <div
+                className={`h-full transition-all duration-200 ${
+                  hud.isDawnBurn
+                    ? 'bg-gradient-to-r from-[#f59e0b] to-[#ef4444]'
+                    : hud.isDawnApproaching
+                    ? 'bg-gradient-to-r from-[#6366f1] via-[#d97706] to-[#fbbf24]'
+                    : 'bg-gradient-to-r from-[#312e81] via-[#4f46e5] to-[#818cf8]'
+                }`}
+                style={{ width: `${Math.min(100, Math.max(2, hud.nightProgress * 100))}%` }}
+              />
+            </div>
           </div>
 
           {/* Blood Reservoir */}
@@ -396,7 +436,11 @@ export function GameHud({
             <span className="truncate">{hud.currentDistrictName}</span>
             <span
               className={`tabular-nums shrink-0 font-semibold ${
-                hud.currentDistrictInfamy >= 45
+                hud.isInSafeSanctuary
+                  ? 'text-[#a5b4fc]'
+                  : hud.isInSafeCemetery
+                  ? 'text-[#6ee7b7]'
+                  : hud.currentDistrictInfamy >= 45
                   ? 'text-[#ef4444]'
                   : hud.currentDistrictInfamy >= 25
                   ? 'text-[#facc15]'
@@ -405,11 +449,13 @@ export function GameHud({
             >
               {hud.isInSafeSanctuary
                 ? 'Cripta Segura'
+                : hud.isInSafeCemetery
+                ? 'Cemitério Seguro'
                 : `Infâmia ${hud.currentDistrictInfamy}%`}
             </span>
           </div>
 
-          {/* Concise Night Objective: Main Target or Return to Crypt Coffin */}
+          {/* Concise Night Objective + Subtle Crypt Direction/Distance Compass */}
           <div
             className={`mt-1 pt-1 border-t flex items-center justify-between gap-2 text-[10px] ${
               deepShadow ? 'border-[#3d4870]' : 'border-[#1d2233]'
@@ -420,10 +466,41 @@ export function GameHud({
                 Retornar à Cripta · Caixão [E]
               </span>
             ) : (
-              <>
-                <span className="text-[#94a0bd] truncate">
-                  Alvo: <strong className="text-[#fcd34d] font-normal">{hud.mainTargetName}</strong>
-                </span>
+              <span className="text-[#94a0bd] truncate">
+                Alvo: <strong className="text-[#fcd34d] font-normal">{hud.mainTargetName}</strong>
+              </span>
+            )}
+
+            {hud.showCryptCompass ? (
+              <span
+                className={`shrink-0 flex items-center gap-1 tabular-nums text-[10px] ${
+                  hud.isDawnBurn
+                    ? 'text-[#fde047] font-semibold'
+                    : hud.isDawnApproaching
+                    ? 'text-[#fcd34d]'
+                    : hud.canCompleteNight
+                    ? 'text-[#86efac]'
+                    : 'text-[#a5b4fc]'
+                }`}
+                title={
+                  hud.isInSafeSanctuary
+                    ? 'Direção e distância até o Caixão da Cripta'
+                    : 'Direção e distância até a Cripta no Adro da Catedral Norte'
+                }
+              >
+                <svg
+                  viewBox="0 0 16 16"
+                  className="w-3 h-3 shrink-0 transition-transform duration-100"
+                  style={{ transform: `rotate(${hud.cryptBearingDeg}deg)` }}
+                  aria-hidden="true"
+                >
+                  <path d="M8 1.5L13 13.5L8 10.8L3 13.5Z" fill="currentColor" />
+                </svg>
+                <span>{hud.isInSafeSanctuary ? 'Caixão' : 'Cripta'}</span>
+                <span>{hud.cryptDistance}m</span>
+              </span>
+            ) : (
+              !hud.canCompleteNight && (
                 <span
                   className={`shrink-0 text-[9px] uppercase tracking-wider ${
                     hud.mainTargetDefeated ? 'text-[#86efac]' : 'text-[#fca5a5]'
@@ -431,10 +508,45 @@ export function GameHud({
                 >
                   {hud.mainTargetDefeated ? 'Abatido' : 'Ativo'}
                 </span>
-              </>
+              )
             )}
           </div>
         </div>
+
+        {/* Discrete Return-to-Crypt Strip when Dawn is Near / Active or Night Objective Met */}
+        {(hud.isDawnApproaching || hud.isDawnBurn || hud.canCompleteNight) &&
+          !(hud.isInSafeSanctuary && hud.cryptDistance <= 3) && (
+            <div
+              className={`mt-1.5 w-60 md:w-64 px-2.5 py-1.5 border flex items-center justify-between gap-2 text-[10px] uppercase tracking-[0.12em] transition-colors ${
+                hud.isDawnBurn
+                  ? 'bg-[#2a070b]/94 border-[#ef4444] text-[#fde047]'
+                  : hud.isDawnApproaching
+                  ? 'bg-[#211306]/92 border-[#d97706] text-[#fcd34d]'
+                  : 'bg-[#081512]/90 border-[#2e6f56] text-[#86efac]'
+              }`}
+            >
+              <span className="truncate font-semibold">
+                {hud.isDawnBurn
+                  ? 'Aurora · Volte à Cripta!'
+                  : hud.isDawnApproaching
+                  ? 'Amanhecer · Volte à Cripta'
+                  : hud.isInSafeSanctuary
+                  ? 'Repousar no Caixão [E]'
+                  : 'Cota Pronta · Cripta [E]'}
+              </span>
+              <span className="shrink-0 flex items-center gap-1 tabular-nums">
+                <svg
+                  viewBox="0 0 16 16"
+                  className="w-3 h-3 shrink-0 transition-transform duration-100"
+                  style={{ transform: `rotate(${hud.cryptBearingDeg}deg)` }}
+                  aria-hidden="true"
+                >
+                  <path d="M8 1.5L13 13.5L8 10.8L3 13.5Z" fill="currentColor" />
+                </svg>
+                <span>{hud.cryptDistance}m</span>
+              </span>
+            </div>
+          )}
 
         {/* Top-Right: Essence & Quick Controls */}
         <div className="flex items-center gap-2 pointer-events-auto">
@@ -444,12 +556,21 @@ export function GameHud({
                 ? 'bg-[#03050b]/96 border-[#7c8cff] shadow-[0_0_0_1px_rgba(165,180,252,0.32)]'
                 : 'bg-[#080a12]/88 border-[#3a2832]'
             }`}
-            title="Essência Sanguínea"
+            title={
+              hud.pendingEssence > 0
+                ? `Essência Consolidada: ${hud.essence} · Pendente nesta noite: +${hud.pendingEssence} (retorne ao Caixão na Cripta para consolidar)`
+                : 'Essência Sanguínea Consolidada'
+            }
           >
             <svg viewBox="0 0 16 16" className="w-3.5 h-3.5" aria-hidden="true">
               <polygon points="8,1 14,8 8,15 2,8" fill="#dc2626" stroke="#fca5a5" strokeWidth="1" />
             </svg>
             <span className="text-sm font-semibold tabular-nums text-white">{hud.essence}</span>
+            {hud.pendingEssence > 0 && (
+              <span className="text-[11px] font-semibold tabular-nums text-[#fcd34d]">
+                +{hud.pendingEssence}
+              </span>
+            )}
           </div>
 
           <button

@@ -9,6 +9,7 @@ import {
 } from './materials';
 import {
   createNpcModel,
+  createVampireFirstPersonArms,
   createVampireModel,
   GUARD_HALF_FOV,
   GUARD_VISION_RANGE,
@@ -18,6 +19,7 @@ import {
   type MemoryFragmentInstance,
   type NpcModelRig,
   type StreetLampInstance,
+  type VampireFirstPersonRig,
   type VampireRig,
 } from './models';
 import type { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
@@ -96,7 +98,17 @@ interface NpcEntity {
   hasBodyguard: boolean;
   attackWindup: number;
   attackCooldown: number;
+  attackSwingTimer: number;
   hitStaggerTimer: number;
+  hitStaggerDuration: number;
+  hitRecoilDir: number;
+  deathFallTimer: number;
+  deathFallStartRotX: number;
+  deathFallStartY: number;
+  frameMoveDirX: number;
+  frameMoveDirZ: number;
+  frameMoveSpeed: number;
+  frameIsMoving: boolean;
   walkPhase: number;
   huntPoints: number;
   bloodReward: number;
@@ -107,6 +119,7 @@ interface NpcEntity {
   lastStuckCheckPos: THREE.Vector3;
   stuckTimer: number;
   avoidSign: number;
+  steerAngleOffset: number;
   possessTimer: number;
   possessPos: THREE.Vector3;
   boltCooldown: number;
@@ -150,6 +163,15 @@ interface SmokePuff {
   maxLife: number;
   baseScale: number;
   isDark: boolean;
+}
+
+interface AmbientMote {
+  active: boolean;
+  pos: THREE.Vector3;
+  vel: THREE.Vector3;
+  life: number;
+  maxLife: number;
+  baseScale: number;
 }
 
 function detectSoftwareGl(): boolean {
@@ -203,6 +225,70 @@ function raycastAabb2D(
   }
 
   return tmin >= 0 && tmin < maxDist ? tmin : maxDist;
+}
+
+function probeObstacleClearance(
+  ox: number,
+  oz: number,
+  dx: number,
+  dz: number,
+  maxDist: number,
+  footCheckY: number,
+  headCheckY: number,
+  padRadius: number,
+  volumes: WorldVolume[],
+): number {
+  let closest = maxDist;
+  const invX = Math.abs(dx) < 1e-6 ? 0 : 1 / dx;
+  const invZ = Math.abs(dz) < 1e-6 ? 0 : 1 / dz;
+
+  for (let i = 0; i < volumes.length; i++) {
+    const b = volumes[i];
+    if (b.maxY <= footCheckY || b.minY >= headCheckY) continue;
+
+    const minX = b.minX - padRadius;
+    const maxX = b.maxX + padRadius;
+    const minZ = b.minZ - padRadius;
+    const maxZ = b.maxZ + padRadius;
+
+    let tmin = 0;
+    let tmax = closest;
+
+    if (invX === 0) {
+      if (ox < minX || ox > maxX) continue;
+    } else {
+      let t1 = (minX - ox) * invX;
+      let t2 = (maxX - ox) * invX;
+      if (t1 > t2) {
+        const tmp = t1;
+        t1 = t2;
+        t2 = tmp;
+      }
+      if (t1 > tmin) tmin = t1;
+      if (t2 < tmax) tmax = t2;
+      if (tmin > tmax) continue;
+    }
+
+    if (invZ === 0) {
+      if (oz < minZ || oz > maxZ) continue;
+    } else {
+      let t1 = (minZ - oz) * invZ;
+      let t2 = (maxZ - oz) * invZ;
+      if (t1 > t2) {
+        const tmp = t1;
+        t1 = t2;
+        t2 = tmp;
+      }
+      if (t1 > tmin) tmin = t1;
+      if (t2 < tmax) tmax = t2;
+      if (tmin > tmax) continue;
+    }
+
+    if (tmin >= 0 && tmin < closest) {
+      closest = tmin;
+    }
+  }
+  return closest;
 }
 
 function hasLineOfSight(
@@ -337,6 +423,7 @@ export class VampireGameEngine {
   private mats: GothicMaterialLibrary;
   private world: CityWorldData;
   private vampire: VampireRig;
+  private fpArms: VampireFirstPersonRig;
   private npcs: NpcEntity[] = [];
   private ambientBats: THREE.Mesh[] = [];
 
@@ -364,10 +451,16 @@ export class VampireGameEngine {
   private rainDrops: Array<{ x: number; y: number; z: number; speed: number }> = [];
   private rainMesh!: THREE.InstancedMesh;
   private rainMat!: THREE.MeshBasicMaterial;
-  private smokeCount = 72;
+  private smokeCount = 96;
   private smokePuffs: SmokePuff[] = [];
   private smokeMesh: THREE.InstancedMesh;
   private smokeSpawnTimer = 0;
+  private ambientMoteCount = 72;
+  private ambientMotes: AmbientMote[] = [];
+  private ambientMoteMesh: THREE.InstancedMesh;
+  private ambientMoteSpawnTimer = 0;
+  private nearbySmokeIndices: number[] = [];
+  private nearbyLampIndices: number[] = [];
   private windAngle = 0.55;
   private windStrength = 0.65;
   private soundRipples: SoundRipple[] = [];
@@ -385,14 +478,20 @@ export class VampireGameEngine {
   private wasGrounded = true;
   private playerYaw = 0.6;
   private camYaw = 0.6;
-  private camPitch = 0.36;
-  private camDist = 6.8;
+  private camPitch = 0.0;
+  private camEyeHeight = 1.66;
+  private camSmoothFloorY = -2.4;
+  private camBobY = 0;
+  private camBobX = 0;
+  private camRoll = 0;
+  private lastHorizSpeed = 0;
   private walkCycle = 0;
   private health = 100;
   private maxHealth = 100;
   private blood = 92;
   private maxBlood = 100;
   private essence = 35;
+  private pendingEssence = 0;
   private exposure = 0;
   private shadowImmersion = 0;
   private noiseLevel = 0;
@@ -418,15 +517,29 @@ export class VampireGameEngine {
   private astralYaw = 0;
   private astralPitch = 0.25;
   private astralOrb!: THREE.Mesh;
+  private shadowDecoyGroup!: THREE.Group;
+  private shadowDecoyBodyMat!: THREE.MeshBasicMaterial;
+  private shadowDecoyRingMat!: THREE.MeshBasicMaterial;
+  private shadowDecoyPos = new THREE.Vector3();
+  private shadowDecoyTimer = 0;
+  private shadowDecoyPulseTimer = 0;
+  private darknessPulseRing!: THREE.Mesh;
+  private darknessPulseMat!: THREE.MeshBasicMaterial;
+  private darknessPulseTimer = 0;
+  private darknessPulseMax = 0.55;
   private projectiles: ShadowProjectile[] = [];
   private castAnimTimer = 0;
   private clawSlashTimer = 0;
+  private clawSlashDuration = 0.24;
   private clawComboStep = 0;
+  private clawActiveComboStep = 0;
+  private clawComboResetTimer = 0;
   private clawCooldown = 0;
   private feedTimer = 0;
   private feedDuration = 1.1;
   private feedTarget: NpcEntity | null = null;
   private feedIsAerial = false;
+  private feedIsStealth = true;
   private feedTakedownKind: 'aerial' | 'guard' | 'noble' | 'cultist' | 'civilian' = 'civilian';
   private feedDesiredPos = new THREE.Vector3();
   private feedCamBlend = 0;
@@ -450,7 +563,9 @@ export class VampireGameEngine {
   private dawnWarned = false;
   private dawnBroken = false;
   private dawnBurnTickTimer = 0;
+  private dawnBurnAudioCooldown = 0;
   private quotaNotified = false;
+  private lastNightSummary: HudSnapshot['lastNightSummary'] = null;
   private mainTargetName = 'Lorde Valerius';
   private mainTargetDistrict = DISTRICT_META.cemetery.name;
   private mainTargetDefeated = false;
@@ -479,8 +594,10 @@ export class VampireGameEngine {
     snuffLamp: 0,
     shadowSnare: 0,
     abyssalShroud: 0,
+    darknessPulse: 0,
     obfuscate: 0,
     falseVisage: 0,
+    shadowDecoy: 0,
     astralScout: 0,
     dominate: 0,
     memoryWipe: 0,
@@ -542,7 +659,9 @@ export class VampireGameEngine {
 
     const width = container.clientWidth || window.innerWidth;
     const height = container.clientHeight || window.innerHeight;
-    this.camera = new THREE.PerspectiveCamera(58, width / height, 0.2, 260);
+    this.camera = new THREE.PerspectiveCamera(66, width / height, 0.08, 260);
+    this.camera.rotation.order = 'YXZ';
+    this.scene.add(this.camera);
 
     // 3-Point Nocturnal Lighting Rig (high light-vs-shadow contrast)
     this.hemiLight = new THREE.HemisphereLight(0x4b5ca3, 0x090b16, 0.4);
@@ -572,9 +691,13 @@ export class VampireGameEngine {
     this.mats = createGothicMaterialLibrary(this.textures, this.sharedUniforms);
     this.world = buildGothicCity(this.scene, this.mats, this.textures);
 
-    this.vampire = createVampireModel(this.mats, this.textures);
+    this.vampire = createVampireModel(this.mats, this.textures, this.sharedUniforms);
     this.vampire.root.position.copy(this.playerPos);
     this.scene.add(this.vampire.root);
+
+    this.fpArms = createVampireFirstPersonArms(this.mats, this.sharedUniforms);
+    this.fpArms.root.visible = false;
+    this.camera.add(this.fpArms.root);
 
     // Particle Pool (InstancedMesh, HDR toneMapped=false so blood & magic sparks catch selective bloom)
     const pGeo = new THREE.OctahedronGeometry(0.14, 0);
@@ -657,6 +780,36 @@ export class VampireGameEngine {
     if (this.smokeMesh.instanceColor) this.smokeMesh.instanceColor.needsUpdate = true;
     this.scene.add(this.smokeMesh);
 
+    // Pooled Discrete Environmental Motes (lamp embers, grate mist specks & crypt brazier sparks)
+    const moteGeo = new THREE.OctahedronGeometry(0.055, 0);
+    const moteMat = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0.72,
+      depthWrite: false,
+      toneMapped: false,
+    });
+    this.ambientMoteMesh = new THREE.InstancedMesh(moteGeo, moteMat, this.ambientMoteCount);
+    this.ambientMoteMesh.frustumCulled = false;
+    for (let i = 0; i < this.ambientMoteCount; i++) {
+      this.ambientMotes.push({
+        active: false,
+        pos: new THREE.Vector3(),
+        vel: new THREE.Vector3(),
+        life: 0,
+        maxLife: 1.8,
+        baseScale: 0.7,
+      });
+      _dummy.position.set(0, -100, 0);
+      _dummy.scale.setScalar(0.001);
+      _dummy.updateMatrix();
+      this.ambientMoteMesh.setMatrixAt(i, _dummy.matrix);
+      this.ambientMoteMesh.setColorAt(i, _color.setHex(0xffb347));
+    }
+    this.ambientMoteMesh.instanceMatrix.needsUpdate = true;
+    if (this.ambientMoteMesh.instanceColor) this.ambientMoteMesh.instanceColor.needsUpdate = true;
+    this.scene.add(this.ambientMoteMesh);
+
     // Dynamic Nocturnal Rain Streak Pool (InstancedMesh)
     const rainGeo = new THREE.CylinderGeometry(0.011, 0.008, 0.95, 4);
     this.rainMat = new THREE.MeshBasicMaterial({
@@ -715,6 +868,50 @@ export class VampireGameEngine {
     this.astralOrb.visible = false;
     this.scene.add(this.astralOrb);
 
+    // Pooled Shadow Decoy Silhouette (Simulacro Sombrio)
+    this.shadowDecoyGroup = new THREE.Group();
+    this.shadowDecoyBodyMat = new THREE.MeshBasicMaterial({
+      color: 0x38bdf8,
+      transparent: true,
+      opacity: 0.62,
+      depthWrite: false,
+      toneMapped: false,
+    });
+    this.shadowDecoyRingMat = new THREE.MeshBasicMaterial({
+      color: 0x818cf8,
+      transparent: true,
+      opacity: 0.52,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      toneMapped: false,
+    });
+    const decoyTorso = new THREE.Mesh(new THREE.CapsuleGeometry(0.24, 0.72, 3, 7), this.shadowDecoyBodyMat);
+    decoyTorso.position.y = 0.96;
+    const decoyHead = new THREE.Mesh(new THREE.SphereGeometry(0.18, 7, 6), this.shadowDecoyBodyMat);
+    decoyHead.position.y = 1.66;
+    const decoyRingGeo = new THREE.RingGeometry(0.65, 0.88, 24);
+    decoyRingGeo.rotateX(-Math.PI / 2);
+    const decoyRing = new THREE.Mesh(decoyRingGeo, this.shadowDecoyRingMat);
+    decoyRing.position.y = 0.06;
+    this.shadowDecoyGroup.add(decoyTorso, decoyHead, decoyRing);
+    this.shadowDecoyGroup.visible = false;
+    this.scene.add(this.shadowDecoyGroup);
+
+    // Pooled Darkness Pulse Shockwave Ring (Pulso de Escuridão)
+    const pulseGeo = new THREE.RingGeometry(0.82, 1.0, 32);
+    pulseGeo.rotateX(-Math.PI / 2);
+    this.darknessPulseMat = new THREE.MeshBasicMaterial({
+      color: 0x4f46e5,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      toneMapped: false,
+    });
+    this.darknessPulseRing = new THREE.Mesh(pulseGeo, this.darknessPulseMat);
+    this.darknessPulseRing.visible = false;
+    this.scene.add(this.darknessPulseRing);
+
     // Pooled Projectiles (Shadow Throw Darts & Hunter Silver Bolts)
     const projGeo = new THREE.ConeGeometry(0.08, 0.55, 6);
     projGeo.rotateX(Math.PI / 2);
@@ -763,10 +960,8 @@ export class VampireGameEngine {
       this.pointerLocked = document.pointerLockElement === this.renderer.domElement;
       this.pushHudSnapshot(true);
     };
-    this.onWheelBound = (e) => {
-      if (this.phase === 'playing') {
-        this.camDist = THREE.MathUtils.clamp(this.camDist + e.deltaY * 0.004, 4.2, 11.5);
-      }
+    this.onWheelBound = () => {
+      // First-person camera keeps fixed eye-level scale; wheel intentionally left passive
     };
 
     window.addEventListener('resize', this.onResizeBound);
@@ -792,15 +987,24 @@ export class VampireGameEngine {
 
   private isNearSafeSanctuary(pos: THREE.Vector3): boolean {
     const cb = this.world.cryptBounds;
-    const inSubterraneanCrypt =
-      pos.x >= cb.minX - 0.5 &&
-      pos.x <= cb.maxX + 0.5 &&
-      pos.z >= cb.minZ - 0.5 &&
-      pos.z <= cb.maxZ + 0.5 &&
-      pos.y <= 0.4;
-    const ax = pos.x - this.world.altarPos.x;
-    const az = pos.z - this.world.altarPos.z;
-    return inSubterraneanCrypt || ax * ax + az * az < 64;
+    return (
+      pos.x >= cb.minX - 0.35 &&
+      pos.x <= cb.maxX + 0.35 &&
+      pos.z >= cb.minZ - 0.35 &&
+      pos.z <= cb.maxZ + 0.35 &&
+      pos.y <= 0.45
+    );
+  }
+
+  private isInSafeCemetery(pos: THREE.Vector3): boolean {
+    const cb = this.world.cemeteryBounds;
+    return (
+      pos.x >= cb.minX &&
+      pos.x <= cb.maxX &&
+      pos.z >= cb.minZ &&
+      pos.z <= cb.maxZ &&
+      pos.y <= 8.0
+    );
   }
 
   private placeVampireInSanctuary(): void {
@@ -808,8 +1012,15 @@ export class VampireGameEngine {
     this.playerVelY = 0;
     this.isGrounded = true;
     this.wasGrounded = true;
-    this.playerYaw = Math.PI;
-    this.camYaw = 0.18;
+    this.playerYaw = 0;
+    this.camYaw = Math.PI - 0.06;
+    this.camPitch = 0.0;
+    this.camEyeHeight = 1.66;
+    this.camSmoothFloorY = this.playerPos.y;
+    this.camBobY = 0;
+    this.camBobX = 0;
+    this.camRoll = 0;
+    this.lastHorizSpeed = 0;
     this.exposure = 0;
     this.shadowImmersion = 1.0;
     this.noiseLevel = 0;
@@ -824,6 +1035,11 @@ export class VampireGameEngine {
     this.celerityTimer = 0;
     this.astralActive = false;
     if (this.astralOrb) this.astralOrb.visible = false;
+    this.shadowDecoyTimer = 0;
+    this.shadowDecoyPulseTimer = 0;
+    if (this.shadowDecoyGroup) this.shadowDecoyGroup.visible = false;
+    this.darknessPulseTimer = 0;
+    if (this.darknessPulseRing) this.darknessPulseRing.visible = false;
     for (const p of this.projectiles) {
       p.active = false;
       p.mesh.visible = false;
@@ -841,8 +1057,14 @@ export class VampireGameEngine {
     this.vampire.bodyPivot.rotation.set(0, 0, 0);
     this.vampire.spinePivot.rotation.set(0, 0, 0);
     this.vampire.head.rotation.set(0, 0, 0);
-    this.vampire.cape.rotation.set(0.14, 0, 0);
+    this.vampire.cape.rotation.set(0.06, 0, 0);
     for (const def of this.vampire.stealthMatDefaults) {
+      def.mat.color.setHex(def.baseColor);
+      def.mat.emissive.setHex(0x000000);
+      def.mat.emissiveIntensity = 0;
+      def.mat.opacity = 1.0;
+    }
+    for (const def of this.fpArms.stealthMatDefaults) {
       def.mat.color.setHex(def.baseColor);
       def.mat.emissive.setHex(0x000000);
       def.mat.emissiveIntensity = 0;
@@ -1004,7 +1226,17 @@ export class VampireGameEngine {
       hasBodyguard: false,
       attackWindup: 0,
       attackCooldown: 0,
+      attackSwingTimer: 0,
       hitStaggerTimer: 0,
+      hitStaggerDuration: 0.4,
+      hitRecoilDir: 1,
+      deathFallTimer: 0,
+      deathFallStartRotX: 0,
+      deathFallStartY: 0,
+      frameMoveDirX: 0,
+      frameMoveDirZ: 0,
+      frameMoveSpeed: 0,
+      frameIsMoving: false,
       walkPhase: Math.random() * 6.28,
       huntPoints,
       bloodReward,
@@ -1015,6 +1247,7 @@ export class VampireGameEngine {
       lastStuckCheckPos: pos.clone(),
       stuckTimer: 0,
       avoidSign: id % 2 === 0 ? 1 : -1,
+      steerAngleOffset: 0,
       possessTimer: 0,
       possessPos: pos.clone(),
       boltCooldown: 0.6 + Math.random() * 0.8,
@@ -1142,6 +1375,7 @@ export class VampireGameEngine {
   }
 
   private addDistrictInfamy(pos: THREE.Vector3, amount: number): void {
+    if (this.isInSafeCemetery(pos)) return;
     const dId = this.getDistrictAt(pos);
     const meta = DISTRICT_META[dId];
     const mult = dId === 'alleys' ? 0.85 : dId === 'cemetery' ? 1.1 : dId === 'avenue' ? 1.15 : 1.0;
@@ -1209,6 +1443,7 @@ export class VampireGameEngine {
     if (phase !== 'playing' && document.pointerLockElement === this.renderer.domElement) {
       document.exitPointerLock();
     }
+    this.audio.setAmbientFocus(phase === 'playing');
     if (phase === 'playing') {
       this.audio.startAmbient();
       this.clock.getDelta();
@@ -1222,6 +1457,7 @@ export class VampireGameEngine {
     this.blood = 92;
     this.maxBlood = 100;
     this.essence = 35;
+    this.pendingEssence = 0;
     this.globalSuspicion = 0;
     this.districtInfamy = {
       cathedral: 0,
@@ -1239,7 +1475,9 @@ export class VampireGameEngine {
     this.dawnWarned = false;
     this.dawnBroken = false;
     this.dawnBurnTickTimer = 0;
+    this.dawnBurnAudioCooldown = 0;
     this.quotaNotified = false;
+    this.lastNightSummary = null;
     this.killsThisNight = 0;
     this.quotaThisNight = 7;
     this.totalKills = 0;
@@ -1264,8 +1502,10 @@ export class VampireGameEngine {
       snuffLamp: 0,
       shadowSnare: 0,
       abyssalShroud: 0,
+      darknessPulse: 0,
       obfuscate: 0,
       falseVisage: 0,
+      shadowDecoy: 0,
       astralScout: 0,
       dominate: 0,
       memoryWipe: 0,
@@ -1278,8 +1518,12 @@ export class VampireGameEngine {
     };
     this.deathReason = null;
     this.clawSlashTimer = 0;
+    this.clawSlashDuration = 0.24;
     this.clawComboStep = 0;
+    this.clawActiveComboStep = 0;
+    this.clawComboResetTimer = 0;
     this.clawCooldown = 0;
+    this.feedIsStealth = true;
     this.killSlowMoTimer = 0;
     this.killCamIntensity = 0;
     this.jumpLandAnimTimer = 0;
@@ -1319,13 +1563,12 @@ export class VampireGameEngine {
     this.dawnWarned = false;
     this.dawnBroken = false;
     this.dawnBurnTickTimer = 0;
+    this.dawnBurnAudioCooldown = 0;
     this.quotaNotified = false;
+    this.lastNightSummary = null;
+    this.pendingEssence = 0;
     this.killsThisNight = 0;
     this.quotaThisNight = 7 + (this.nightNumber - 1) * 3;
-    this.globalSuspicion = Math.max(0, this.globalSuspicion * 0.45);
-    (Object.keys(this.districtInfamy) as DistrictId[]).forEach((d) => {
-      this.districtInfamy[d] = Math.max(0, Math.round(this.districtInfamy[d] * 0.6));
-    });
     this.weatherIndex = (this.nightNumber - 1) % this.weatherSchedule.length;
     this.weather = this.weatherSchedule[this.weatherIndex];
     this.weatherTimer = 0;
@@ -1681,8 +1924,9 @@ export class VampireGameEngine {
       const susReduction = this.globalSuspicion >= 50 ? 0.65 : 1.0;
       lamp.extinguishTimer = (22 + (this.hasSkill('ten_3') ? 8 : 0)) * susReduction;
 
-      // Nearby guards & mortals notice the sudden darkness and walk over to inspect the lamp
-      let closestGuardDist = Infinity;
+      // Only NPCs within 12m with unobstructed line of sight to the lamp notice it go dark
+      // and walk over to inspect the extinguished post without auto-detecting the player
+      let closestNoticeDist = Infinity;
       let anyInvestigated = false;
       for (const npc of this.npcs) {
         if (
@@ -1696,15 +1940,20 @@ export class VampireGameEngine {
         ) {
           const isGuardTier =
             npc.archetype === 'guard' || npc.archetype === 'bodyguard' || npc.archetype === 'hunter';
-          const maxNoticeRange = isGuardTier ? 22 : 11.5;
-          const d = npc.position.distanceTo(lamp.position);
-          if (d < maxNoticeRange && Math.abs(npc.position.y - lamp.position.y) < 4.5) {
-            if (isGuardTier && d < closestGuardDist) closestGuardDist = d;
+          const d = Math.hypot(npc.position.x - lamp.position.x, npc.position.z - lamp.position.z);
+          if (
+            d <= 12.0 &&
+            Math.abs(npc.position.y - lamp.position.y) < 4.5 &&
+            hasLineOfSight(npc.position, lamp.position, this.world.volumes)
+          ) {
+            if (d < closestNoticeDist) closestNoticeDist = d;
+            _v1.subVectors(lamp.position, npc.position);
+            npc.yaw = Math.atan2(_v1.x, _v1.z);
             npc.state = 'curious';
             npc.restTimer = 0;
             npc.investigateArrived = false;
-            npc.suspicion = Math.max(npc.suspicion, isGuardTier ? 0.38 : 0.25);
-            npc.stateTimer = 8.5;
+            npc.suspicion = Math.max(npc.suspicion, isGuardTier ? 0.35 : 0.22);
+            npc.stateTimer = 7.5;
             npc.investigatePos.copy(lamp.position);
             anyInvestigated = true;
           }
@@ -1713,8 +1962,8 @@ export class VampireGameEngine {
       if (anyInvestigated && this.phase === 'playing') {
         this.audio.playSuspicionCue('curious');
       }
-      if (closestGuardDist < 22 && this.phase === 'playing') {
-        this.showBanner('Sentinela notou o lampião apagado e foi investigar!', 2.4);
+      if (closestNoticeDist <= 12.0 && this.phase === 'playing') {
+        this.showBanner('Alguém avistou o lampião apagado e foi investigar!', 2.3);
       }
     } else {
       lamp.extinguishTimer = 0;
@@ -1991,6 +2240,7 @@ export class VampireGameEngine {
 
     if (this.phase !== 'playing') return;
 
+    this.audio.startAmbient();
     if (!this.heldKeys.has(code)) {
       this.justPressed.add(code);
     }
@@ -2032,8 +2282,8 @@ export class VampireGameEngine {
         this.astralYaw -= e.movementX * 0.0042;
         this.astralPitch = THREE.MathUtils.clamp(this.astralPitch + e.movementY * 0.0032, -0.65, 0.85);
       } else {
-        this.camYaw -= e.movementX * 0.0042;
-        this.camPitch = THREE.MathUtils.clamp(this.camPitch + e.movementY * 0.0032, 0.12, 0.92);
+        this.camYaw -= e.movementX * 0.0028;
+        this.camPitch = THREE.MathUtils.clamp(this.camPitch + e.movementY * 0.0024, -1.24, 1.32);
       }
     }
   }
@@ -2108,8 +2358,12 @@ export class VampireGameEngine {
     this.sharedUniforms.uWindDir.value.set(Math.cos(this.windAngle), Math.sin(this.windAngle));
     this.sharedUniforms.uWindStrength.value = this.windStrength;
     this.audio.updateWindAmbience(this.windStrength);
+    if (this.phase === 'playing') {
+      this.audio.tickAmbientAtmosphere(dt, this.isNearSafeSanctuary(this.playerPos), this.windStrength);
+    }
     this.updateWeather(dt, this.phase === 'playing');
     this.updateSmoke(dt);
+    this.updateAmbientMotes(dt);
 
     // Animate uncollected Memory Fragments
     for (let i = 0; i < this.world.memories.length; i++) {
@@ -2149,6 +2403,9 @@ export class VampireGameEngine {
     );
 
     if (this.phase === 'title') {
+      this.vampire.bodyPivot.visible = true;
+      this.vampire.contactShadow.visible = true;
+      this.fpArms.root.visible = false;
       this.shadowImmersion = THREE.MathUtils.damp(this.shadowImmersion, 0, 6.0, realDt);
       this.audio.updateWhisperAmbience(0, 0);
       if (this.shadowPass) {
@@ -2159,6 +2416,7 @@ export class VampireGameEngine {
       }
       this.titleAngle += realDt * 0.14;
       const r = 34;
+      this.camera.rotation.order = 'XYZ';
       this.camera.position.set(
         Math.sin(this.titleAngle) * r,
         16 + Math.sin(this.titleAngle * 0.7) * 2.5,
@@ -2172,6 +2430,9 @@ export class VampireGameEngine {
     }
 
     if (this.phase !== 'playing') {
+      if (this.phase === 'gameover' || this.phase === 'victory') {
+        this.fpArms.root.visible = false;
+      }
       this.shadowImmersion = THREE.MathUtils.damp(this.shadowImmersion, 0, 6.0, realDt);
       this.audio.updateWhisperAmbience(0, 0);
       if (this.shadowPass) {
@@ -2207,8 +2468,10 @@ export class VampireGameEngine {
     this.cooldowns.snuffLamp = Math.max(0, this.cooldowns.snuffLamp - cdDt);
     this.cooldowns.shadowSnare = Math.max(0, this.cooldowns.shadowSnare - cdDt);
     this.cooldowns.abyssalShroud = Math.max(0, this.cooldowns.abyssalShroud - cdDt);
+    this.cooldowns.darknessPulse = Math.max(0, this.cooldowns.darknessPulse - cdDt);
     this.cooldowns.obfuscate = Math.max(0, this.cooldowns.obfuscate - cdDt);
     this.cooldowns.falseVisage = Math.max(0, this.cooldowns.falseVisage - cdDt);
+    this.cooldowns.shadowDecoy = Math.max(0, this.cooldowns.shadowDecoy - cdDt);
     this.cooldowns.astralScout = Math.max(0, this.cooldowns.astralScout - cdDt);
     this.cooldowns.dominate = Math.max(0, this.cooldowns.dominate - cdDt);
     this.cooldowns.memoryWipe = Math.max(0, this.cooldowns.memoryWipe - cdDt);
@@ -2228,8 +2491,48 @@ export class VampireGameEngine {
     this.celerityTimer = Math.max(0, this.celerityTimer - dt);
     this.castAnimTimer = Math.max(0, this.castAnimTimer - dt);
     this.clawSlashTimer = Math.max(0, this.clawSlashTimer - dt);
+    this.clawComboResetTimer = Math.max(0, this.clawComboResetTimer - dt);
     this.clawCooldown = Math.max(0, this.clawCooldown - dt);
     this.jumpLandAnimTimer = Math.max(0, this.jumpLandAnimTimer - dt);
+
+    // Update active Shadow Decoy (Simulacro Sombrio) lure & visuals
+    if (this.shadowDecoyTimer > 0) {
+      this.shadowDecoyTimer = Math.max(0, this.shadowDecoyTimer - dt);
+      if (this.shadowDecoyTimer <= 0) {
+        this.shadowDecoyGroup.visible = false;
+      } else {
+        this.shadowDecoyGroup.visible = true;
+        this.shadowDecoyGroup.position.set(
+          this.shadowDecoyPos.x,
+          this.shadowDecoyPos.y + Math.sin(t * 4.2) * 0.08,
+          this.shadowDecoyPos.z,
+        );
+        this.shadowDecoyGroup.rotation.y += dt * 1.4;
+        const fadeOut = Math.min(1, this.shadowDecoyTimer / 0.9);
+        this.shadowDecoyBodyMat.opacity = (0.48 + Math.sin(t * 7.5) * 0.14) * fadeOut;
+        this.shadowDecoyRingMat.opacity = (0.42 + Math.cos(t * 5.0) * 0.12) * fadeOut;
+        if (Math.random() < 0.14) {
+          this.emitDarkSmoke(this.shadowDecoyPos.clone().setY(this.shadowDecoyPos.y + 0.75), 1, 0.38);
+        }
+        this.shadowDecoyPulseTimer -= dt;
+        if (this.shadowDecoyPulseTimer <= 0) {
+          this.shadowDecoyPulseTimer = 1.25;
+          this.lureNpcsToDecoy(false);
+        }
+      }
+    }
+
+    // Update expanding Darkness Pulse shockwave ring
+    if (this.darknessPulseTimer > 0) {
+      this.darknessPulseTimer = Math.max(0, this.darknessPulseTimer - realDt);
+      const pProg = 1 - this.darknessPulseTimer / this.darknessPulseMax;
+      const rad = 1.2 + pProg * 12.2;
+      this.darknessPulseRing.scale.setScalar(rad);
+      this.darknessPulseMat.opacity = (1 - pProg) * 0.72;
+      if (this.darknessPulseTimer <= 0) {
+        this.darknessPulseRing.visible = false;
+      }
+    }
 
     for (const lamp of this.world.lamps) {
       if (lamp.isLit) {
@@ -2259,8 +2562,8 @@ export class VampireGameEngine {
     this.updateProjectiles(dt);
     this.updateNpcs(dt);
 
-    // Smoothly widen FOV during Celerity or Astral Scout
-    const targetFov = this.astralActive ? 65 : this.celerityTimer > 0 ? 67 : 58;
+    // Smoothly widen FOV during Celerity or Astral Scout for crisp first-person sense of speed
+    const targetFov = this.astralActive ? 68 : this.celerityTimer > 0 ? 75 : 66;
     if (Math.abs(this.camera.fov - targetFov) > 0.05) {
       this.camera.fov = THREE.MathUtils.damp(this.camera.fov, targetFov, 8, realDt);
       this.camera.updateProjectionMatrix();
@@ -2290,7 +2593,16 @@ export class VampireGameEngine {
       this.shadowPass.uniforms.uKillCam.value = this.killCamIntensity;
     }
 
-    // Slow Global Suspicion & Regional Infamy decay when quiet in each district
+    // Slow Global Suspicion & Regional Infamy decay when quiet in each district; rapid respite in Safe Cemetery
+    const playerInSafeCemetery = this.isInSafeCemetery(this.playerPos);
+    if (playerInSafeCemetery) {
+      if (this.globalSuspicion > 0) {
+        this.globalSuspicion = Math.max(0, this.globalSuspicion - 5.5 * dt);
+      }
+      if (this.districtInfamy.cemetery > 0) {
+        this.districtInfamy.cemetery = Math.max(0, this.districtInfamy.cemetery - 3.8 * dt);
+      }
+    }
     const anyAlert = this.npcs.some((n) => n.state === 'alert' || n.state === 'hunt');
     if (!anyAlert && this.exposure < 35 && this.globalSuspicion > 0) {
       this.globalSuspicion = Math.max(0, this.globalSuspicion - 0.55 * dt);
@@ -2382,9 +2694,14 @@ export class VampireGameEngine {
       if (!this.isNearSafeSanctuary(this.playerPos)) {
         this.health -= 5.8 * dt;
         this.dawnBurnTickTimer -= dt;
+        this.dawnBurnAudioCooldown -= dt;
         if (this.dawnBurnTickTimer <= 0) {
           this.dawnBurnTickTimer = 0.28;
           this.emitParticles(this.playerPos.clone().setY(this.playerPos.y + 1.1), 3, 0xfbbf24, 2.2, 0.45, 0.6, 0.9);
+        }
+        if (this.dawnBurnAudioCooldown <= 0) {
+          this.dawnBurnAudioCooldown = 0.95;
+          this.audio.playDawnBurnTick();
         }
         if (this.health <= 0) {
           this.triggerGameOver('Reduzido a cinzas pela luz implacável da alvorada nas ruas de Ravencroft.');
@@ -2414,6 +2731,37 @@ export class VampireGameEngine {
     }
   }
 
+  private lureNpcsToDecoy(playCue: boolean): void {
+    let playedCue = !playCue;
+    for (const npc of this.npcs) {
+      if (
+        npc.state === 'drained' ||
+        npc.state === 'stunned' ||
+        npc.state === 'possessed' ||
+        npc.state === 'alert' ||
+        npc.state === 'hunt' ||
+        npc.state === 'flee' ||
+        npc === this.feedTarget
+      ) {
+        continue;
+      }
+      const d = Math.hypot(npc.position.x - this.shadowDecoyPos.x, npc.position.z - this.shadowDecoyPos.z);
+      if (d <= 16.5 && Math.abs(npc.position.y - this.shadowDecoyPos.y) <= 5.0) {
+        const prev = npc.state;
+        npc.restTimer = 0;
+        npc.investigateArrived = false;
+        npc.investigatePos.copy(this.shadowDecoyPos);
+        npc.state = 'curious';
+        npc.stateTimer = Math.max(npc.stateTimer, 4.8);
+        npc.suspicion = Math.max(npc.suspicion, 0.35);
+        if (!playedCue && (prev === 'patrol' || prev === 'resting')) {
+          playedCue = true;
+          this.audio.playSuspicionCue('curious');
+        }
+      }
+    }
+  }
+
   private canUsePower(powerId: ActivePowerId): boolean {
     const meta = ACTIVE_POWER_LIST.find((p) => p.id === powerId);
     if (!meta) return false;
@@ -2433,10 +2781,14 @@ export class VampireGameEngine {
         return 9.0;
       case 'abyssalShroud':
         return 16.0;
+      case 'darknessPulse':
+        return this.hasSkill('ten_3') ? 13.0 : 16.0;
       case 'obfuscate':
         return this.hasSkill('ofu_3') ? 10.5 : 13.0;
       case 'falseVisage':
         return this.hasSkill('ofu_3') ? 12.5 : 15.0;
+      case 'shadowDecoy':
+        return this.hasSkill('ofu_3') ? 11.5 : 14.0;
       case 'astralScout':
         return 2.0;
       case 'dominate':
@@ -2599,6 +2951,8 @@ export class VampireGameEngine {
               npc.stateTimer = this.hasSkill('amal_umbra_blade') ? 3.2 : 2.2;
               npc.suspicion = 0;
               npc.hitStaggerTimer = 0.35;
+              npc.hitStaggerDuration = 0.35;
+              npc.hitRecoilDir = 1;
               this.emitParticles(
                 npc.position.clone().setY(npc.position.y + 1.3),
                 14,
@@ -2672,9 +3026,19 @@ export class VampireGameEngine {
   }
 
   private performClawAttack(): void {
-    this.clawCooldown = this.celerityTimer > 0 ? 0.22 : 0.38;
-    this.clawSlashTimer = 0.22;
-    this.clawComboStep = (this.clawComboStep + 1) % 2;
+    if (this.clawComboResetTimer <= 0) {
+      this.clawComboStep = 0;
+    }
+    const step = this.clawComboStep;
+    this.clawActiveComboStep = step;
+    this.clawComboStep = (step + 1) % 3;
+    this.clawComboResetTimer = 0.95;
+
+    const isFinisher = step === 2;
+    const fast = this.celerityTimer > 0;
+    this.clawSlashDuration = isFinisher ? (fast ? 0.22 : 0.3) : fast ? 0.18 : 0.24;
+    this.clawSlashTimer = this.clawSlashDuration;
+    this.clawCooldown = isFinisher ? (fast ? 0.26 : 0.44) : fast ? 0.2 : 0.34;
     this.audio.playClawSlash();
 
     // Face camera look direction slightly & lunge forward
@@ -2691,16 +3055,18 @@ export class VampireGameEngine {
 
     const dirX = Math.sin(this.playerYaw);
     const dirZ = Math.cos(this.playerYaw);
-    this.playerPos.x += dirX * 0.45;
-    this.playerPos.z += dirZ * 0.45;
+    const lungeDist = isFinisher ? 0.72 : 0.44;
+    this.playerPos.x += dirX * lungeDist;
+    this.playerPos.z += dirZ * lungeDist;
 
     // Crimson claw arc particles
     _v1.set(this.playerPos.x + dirX * 1.1, this.playerPos.y + 1.25, this.playerPos.z + dirZ * 1.1);
-    this.emitParticles(_v1, 10, 0xef4444, 3.8, 0.28, 0.0, 0.85);
+    this.emitParticles(_v1, isFinisher ? 16 : 10, 0xef4444, isFinisher ? 4.8 : 3.8, 0.28, 0.0, 0.85);
 
     const damage =
       (24 + (this.hasSkill('met_1') ? 9 : 0)) *
-      (this.celerityTimer > 0 && this.hasSkill('rap_3') ? 1.2 : 1.0);
+      (this.celerityTimer > 0 && this.hasSkill('rap_3') ? 1.2 : 1.0) *
+      (isFinisher ? 1.18 : 1.0);
     let hitAny = false;
 
     for (const npc of this.npcs) {
@@ -2709,7 +3075,7 @@ export class VampireGameEngine {
       const dz = npc.position.z - this.playerPos.z;
       const dist = Math.hypot(dx, dz);
       const dy = Math.abs(npc.position.y - this.playerPos.y);
-      if (dist > 3.1 || dy > 1.8) continue;
+      if (dist > (isFinisher ? 3.35 : 3.1) || dy > 1.8) continue;
 
       const dot = dist > 0.01 ? (dx / dist) * dirX + (dz / dist) * dirZ : 1;
       if (dot < 0.1) continue;
@@ -2717,13 +3083,16 @@ export class VampireGameEngine {
       hitAny = true;
       this.registerEncounter(npc);
       npc.hp -= damage;
-      npc.hitStaggerTimer = 0.42;
+      npc.hitStaggerTimer = isFinisher ? 0.48 : 0.4;
+      npc.hitStaggerDuration = npc.hitStaggerTimer;
+      npc.hitRecoilDir = step === 1 ? -1 : 1;
       npc.attackWindup = 0;
 
       // Knockback
       if (dist > 0.01) {
-        npc.position.x += (dx / dist) * 0.85;
-        npc.position.z += (dz / dist) * 0.85;
+        const kb = isFinisher ? 1.1 : 0.85;
+        npc.position.x += (dx / dist) * kb;
+        npc.position.z += (dz / dist) * kb;
         resolveHorizontal3D(npc.position, 0.45, this.world.volumes, this.world.playableBounds);
       }
 
@@ -2750,22 +3119,35 @@ export class VampireGameEngine {
 
         if (npc.corpseHidden) {
           npc.rig.root.visible = false;
+          npc.deathFallTimer = 0;
         } else {
-          npc.rig.bodyGroup.rotation.x = Math.PI / 2;
-          npc.rig.bodyGroup.position.y = 0.22;
+          npc.deathFallStartRotX = npc.rig.bodyGroup.rotation.x;
+          npc.deathFallStartY = npc.rig.bodyGroup.position.y;
+          npc.deathFallTimer = 0.45;
         }
 
-        // Claw kills do NOT count toward night phase quota and yield minimal essence (prevent kill-farming)
+        // Melee combat kills NEVER count toward stealth night hunt quota and generate much higher Infamy
         this.totalKills += 1;
         if (isGuardTier) this.guardsSlain += 1;
         if (npc.isMainTarget) this.mainTargetDefeated = true;
         const clawEssence = 3;
-        this.essence += clawEssence;
-        this.recordHuntLog(npc, 'Abate por Garras', clawEssence);
-        this.addDistrictInfamy(npc.position, npc.archetype === 'beggar' ? 3 : 10);
+        this.pendingEssence += clawEssence;
+        this.recordHuntLog(npc, 'Abate por Garras (Combate)', clawEssence);
+        const meleeInfamyMap: Record<NpcArchetype, number> = {
+          beggar: 12,
+          citizen: 18,
+          cultist: 22,
+          guard: 26,
+          bodyguard: 30,
+          hunter: 30,
+          noble: 36,
+        };
+        const combatInfamy = meleeInfamyMap[npc.archetype];
+        this.addDistrictInfamy(npc.position, combatInfamy);
+        this.addGlobalSuspicion(8);
         this.showBanner(
-          `${npc.name} abatido · +${clawEssence} Essência (drene com [F])`,
-          2.2,
+          `${npc.name} morto em combate · +${combatInfamy} Infâmia (apenas drenagens furtivas contam na cota)`,
+          2.6,
         );
       } else {
         // Alert guard / hunter / cultist on hit
@@ -2907,6 +3289,13 @@ export class VampireGameEngine {
       while (yawDiff > Math.PI) yawDiff -= Math.PI * 2;
       while (yawDiff < -Math.PI) yawDiff += Math.PI * 2;
       this.playerYaw += yawDiff * Math.min(1, realDt * 15);
+
+      const desiredCamYaw = Math.atan2(-_v1.x, -_v1.z);
+      let camYawDiff = desiredCamYaw - this.camYaw;
+      while (camYawDiff > Math.PI) camYawDiff -= Math.PI * 2;
+      while (camYawDiff < -Math.PI) camYawDiff += Math.PI * 2;
+      this.camYaw += camYawDiff * Math.min(1, realDt * 12);
+      this.camPitch = THREE.MathUtils.damp(this.camPitch, 0.14, 10, realDt);
 
       this.vampire.root.position.copy(this.playerPos);
       this.vampire.root.rotation.y = this.playerYaw;
@@ -3073,7 +3462,7 @@ export class VampireGameEngine {
       );
       this.vampire.cape.rotation.x = THREE.MathUtils.damp(
         this.vampire.cape.rotation.x,
-        THREE.MathUtils.lerp(0.14, targetCapeX, poseWeight),
+        THREE.MathUtils.lerp(0.06, targetCapeX, poseWeight),
         12,
         realDt,
       );
@@ -3117,13 +3506,18 @@ export class VampireGameEngine {
         if (target.rig.visionCone) target.rig.visionCone.visible = false;
         target.corpseDiscovered = false;
         target.rig.bodyGroup.rotation.z = 0;
-        // If drained in dark shadows or under Obfuscate, corpse is automatically concealed; in lit areas it stays exposed!
-        target.corpseHidden = this.isPositionInShadow(target.position) || this.obfuscateTimer > 0;
+        // If drained in dark shadows, under Obfuscate, or from Bote das Cornijas, corpse is concealed!
+        const corniceStealthHide =
+          this.feedIsAerial && (this.hasSkill('rap_3b') || this.hasSkill('amal_nocturnal_stalker'));
+        target.corpseHidden =
+          this.isPositionInShadow(target.position) || this.obfuscateTimer > 0 || corniceStealthHide;
         if (target.corpseHidden) {
           target.rig.root.visible = false;
+          target.deathFallTimer = 0;
         } else {
-          target.rig.bodyGroup.rotation.x = Math.PI / 2;
-          target.rig.bodyGroup.position.y = 0.22;
+          target.deathFallStartRotX = target.rig.bodyGroup.rotation.x;
+          target.deathFallStartY = target.rig.bodyGroup.position.y;
+          target.deathFallTimer = 0.45;
         }
         target.respawnTimer = 22;
         if (target.archetype === 'bodyguard' && target.escortTarget) {
@@ -3160,20 +3554,31 @@ export class VampireGameEngine {
         this.vampire.head.rotation.set(0, 0, 0);
 
         const aerialUsed = this.feedIsAerial;
-        const wasObfuscated = this.obfuscateTimer > 0 || this.mistFormTimer > 0;
+        const stealthUsed = this.feedIsStealth;
+        const wasObfuscated = this.obfuscateTimer > 0 || this.mistFormTimer > 0 || this.abyssalShroudTimer > 0;
         const essenceBonus = this.hasSkill('met_1') ? 1.25 : 1.0;
         const obfBonus = this.hasSkill('ofu_3') && (wasObfuscated || target.corpseHidden) ? 1.25 : 1.0;
-        const aerialBonus = aerialUsed ? 15 + (this.hasSkill('amal_nightmare') ? 15 : 0) : 0;
+        const corniceBonus = aerialUsed && this.hasSkill('rap_3b') ? 20 : 0;
+        const corniceBlood = aerialUsed && this.hasSkill('rap_3b') ? 14 : 0;
+        const aerialBonus = aerialUsed
+          ? 15 + corniceBonus + (this.hasSkill('amal_nightmare') ? 15 : 0)
+          : 0;
         this.feedIsAerial = false;
+        this.feedIsStealth = true;
         const healBonus = (this.hasSkill('met_1') ? 10 : 0) + (aerialUsed && this.hasSkill('amal_nightmare') ? 18 : 0);
         const prevBlood = this.blood;
-        this.blood = Math.min(this.maxBlood, this.blood + target.bloodReward);
+        this.blood = Math.min(this.maxBlood, this.blood + target.bloodReward + corniceBlood);
         const gainedBlood = Math.round(this.blood - prevBlood);
         this.health = Math.min(this.maxHealth, this.health + 12 + healBonus);
-        const gainedEssence = Math.round(target.essenceReward * essenceBonus * obfBonus) + aerialBonus;
-        this.essence += gainedEssence;
+        const gainedEssence = stealthUsed
+          ? Math.round(target.essenceReward * essenceBonus * obfBonus) + aerialBonus
+          : Math.max(4, Math.round(target.essenceReward * 0.45));
+        this.pendingEssence += gainedEssence;
 
-        this.killsThisNight += target.huntPoints;
+        // Only stealth drains count toward the night's hunted victims quota
+        if (stealthUsed) {
+          this.killsThisNight += target.huntPoints;
+        }
         this.totalKills += 1;
         if (target.archetype === 'noble') this.noblesDrained += 1;
         if (target.isMainTarget) this.mainTargetDefeated = true;
@@ -3187,12 +3592,14 @@ export class VampireGameEngine {
 
         const methodLabel = aerialUsed
           ? 'Bote Aéreo Letal'
+          : !stealthUsed
+          ? 'Execução em Combate'
           : wasObfuscated
           ? 'Drenagem sob Ofuscação'
           : 'Drenagem Furtiva';
         this.recordHuntLog(target, methodLabel, gainedEssence);
 
-        // Increase Infamy ONLY if witnessed OR if the corpse remains exposed in a busy/lit area
+        // Increase Infamy if combat execution, witnessed, OR corpse exposed in busy area
         const infamyMap: Record<NpcArchetype, number> = {
           beggar: 3,
           citizen: 8,
@@ -3204,7 +3611,9 @@ export class VampireGameEngine {
         };
         const distId = this.getDistrictAt(target.position);
         const isBusyArea = distId === 'avenue' || distId === 'cathedral' || distId === 'cemetery';
-        if (completionWitnessed) {
+        if (!stealthUsed) {
+          this.addDistrictInfamy(target.position, Math.round(infamyMap[target.archetype] * 1.35) + 4);
+        } else if (completionWitnessed) {
           this.addDistrictInfamy(target.position, infamyMap[target.archetype]);
         } else if (!target.corpseHidden && isBusyArea) {
           this.addDistrictInfamy(target.position, Math.round(infamyMap[target.archetype] * 0.55));
@@ -3266,7 +3675,7 @@ export class VampireGameEngine {
           ? ' (Oculto nas Sombras)'
           : ' ([G] ocultar corpo)';
         this.showBanner(
-          `${bloodLabel} · +${gainedEssence} Essência — ${target.name}${bonusSuffix}`,
+          `${bloodLabel} · +${gainedEssence} Essência (pendente) — ${target.name}${bonusSuffix}`,
           3.2,
         );
         this.pushHudSnapshot(true);
@@ -3324,6 +3733,43 @@ export class VampireGameEngine {
           1.05,
         );
         this.showBanner('Falso Semblante ativo — Sentinelas o verão como um cidadão comum.', 2.6);
+      }
+    }
+
+    // Ofuscação Nv.3B: Simulacro Sombrio — 12 Blood (spawns shadow doppelganger ahead to lure nearby NPCs)
+    if (
+      this.justPressed.has(this.hotkeys.shadowDecoy) &&
+      this.canUsePower('shadowDecoy') &&
+      this.cooldowns.shadowDecoy <= 0
+    ) {
+      if (this.blood < 12) {
+        this.showBanner('Sangue insuficiente.', 1.8);
+      } else {
+        this.blood -= 12;
+        this.cooldowns.shadowDecoy = this.getSkillCooldownMax('shadowDecoy');
+        this.castAnimTimer = 0.24;
+        const lookX = -Math.sin(this.camYaw);
+        const lookZ = -Math.cos(this.camYaw);
+        const dist = 6.8;
+        this.shadowDecoyPos.set(this.playerPos.x + lookX * dist, this.playerPos.y, this.playerPos.z + lookZ * dist);
+        resolveHorizontal3D(this.shadowDecoyPos, 0.5, this.world.volumes, this.world.playableBounds);
+        this.shadowDecoyPos.y = getFloorHeightAt(
+          this.shadowDecoyPos.x,
+          this.shadowDecoyPos.z,
+          this.playerPos.y + 1.5,
+          0.35,
+          this.world.volumes,
+          this.world.cryptBounds,
+        );
+        this.shadowDecoyTimer = 7.5;
+        this.shadowDecoyPulseTimer = 1.1;
+        this.shadowDecoyGroup.position.copy(this.shadowDecoyPos);
+        this.shadowDecoyGroup.visible = true;
+        this.audio.playShadowDecoy();
+        this.emitDarkSmoke(this.shadowDecoyPos.clone().setY(this.shadowDecoyPos.y + 0.9), 10, 0.85);
+        this.emitParticles(this.shadowDecoyPos.clone().setY(this.shadowDecoyPos.y + 1.1), 16, 0x38bdf8, 3.2, 0.55, 0.2, 1.0);
+        this.lureNpcsToDecoy(true);
+        this.showBanner('Simulacro Sombrio invocado — Guardas próximos estão sendo atraídos.', 2.6);
       }
     }
 
@@ -3558,17 +4004,19 @@ export class VampireGameEngine {
         this.castAnimTimer = 0.2;
         this.audio.playShadowThrow();
 
-        const cosP = Math.cos(this.camPitch * 0.55);
-        const dir = new THREE.Vector3(
-          -Math.sin(this.camYaw) * cosP,
-          -Math.sin(this.camPitch * 0.42) + 0.04,
-          -Math.cos(this.camYaw) * cosP,
-        ).normalize();
-        this.playerYaw = Math.atan2(dir.x, dir.z);
+        const cosP = Math.cos(this.camPitch);
+        _v2
+          .set(-Math.sin(this.camYaw) * cosP, -Math.sin(this.camPitch) + 0.015, -Math.cos(this.camYaw) * cosP)
+          .normalize();
+        this.playerYaw = Math.atan2(_v2.x, _v2.z);
 
-        const origin = this.playerPos.clone().add(_v1.set(dir.x * 0.7, 1.35, dir.z * 0.7));
-        this.spawnProjectile(false, origin, dir.multiplyScalar(32), 0.85);
-        this.emitParticles(origin, 8, 0xa855f7, 2.8, 0.3, 0, 0.85);
+        _v1.set(
+          this.playerPos.x + _v2.x * 0.65,
+          this.camSmoothFloorY + this.camEyeHeight - 0.14 + _v2.y * 0.65,
+          this.playerPos.z + _v2.z * 0.65,
+        );
+        this.spawnProjectile(false, _v1, _v2.multiplyScalar(32), 0.85);
+        this.emitParticles(_v1, 8, 0xa855f7, 2.8, 0.3, 0, 0.85);
         if (this.obfuscateTimer <= 0 && this.falseVisageTimer <= 0) {
           this.reportSupernaturalWitness('Arremesso Sombrio', 13.0, 9, 5);
         }
@@ -3643,17 +4091,41 @@ export class VampireGameEngine {
       const memory = !nearCoffin && !bell ? this.findNearbyMemoryFragment() : null;
       if (nearCoffin) {
         interactedWithWorldE = true;
-        if (this.killsThisNight >= this.quotaThisNight) {
-          this.audio.playCoffinRest();
-          this.callbacks.onPhaseRequest('victory');
-          this.setPhase('victory');
-          return;
+        const quotaMet = this.killsThisNight >= this.quotaThisNight;
+        const quotaBonus = quotaMet ? 20 : 0;
+        const consolidated = this.pendingEssence + quotaBonus;
+        this.essence += consolidated;
+        this.pendingEssence = 0;
+        const infamyKeepMult = quotaMet ? 0.55 : 0.7;
+        const infamyReliefPct = quotaMet ? 45 : 30;
+        this.globalSuspicion = Math.max(0, Math.round(this.globalSuspicion * infamyKeepMult));
+        (Object.keys(this.districtInfamy) as DistrictId[]).forEach((d) => {
+          this.districtInfamy[d] = Math.max(0, Math.round(this.districtInfamy[d] * infamyKeepMult));
+        });
+        this.lastNightSummary = {
+          nightNumber: this.nightNumber,
+          kills: this.killsThisNight,
+          quota: this.quotaThisNight,
+          quotaMet,
+          essenceConsolidated: consolidated,
+          quotaBonus,
+          infamyReliefPct,
+        };
+        if (quotaBonus > 0) {
+          this.showBanner(
+            `Cota cumprida! +${consolidated} Essência consolidada (+20 bônus) · -${infamyReliefPct}% Infâmia.`,
+            3.2,
+          );
+        } else {
+          this.showBanner(
+            `Caçada encerrada — +${consolidated} Essência consolidada · -${infamyReliefPct}% Infâmia.`,
+            3.0,
+          );
         }
-        const rem = this.quotaThisNight - this.killsThisNight;
-        this.showBanner(
-          `Ainda faltam ${rem} pts de domínio nesta noite antes de repousar no caixão.`,
-          2.6,
-        );
+        this.audio.playCoffinRest();
+        this.callbacks.onPhaseRequest('victory');
+        this.setPhase('victory');
+        return;
       } else if (bell) {
         interactedWithWorldE = true;
         bell.sabotaged = true;
@@ -3661,11 +4133,11 @@ export class VampireGameEngine {
         bell.ropeMesh.visible = false;
         bell.bellPivot.rotation.z = 0.25;
         bell.beaconMat.color.setHex(0x334155);
-        this.essence += 12;
+        this.pendingEssence += 12;
         this.globalSuspicion = Math.max(0, this.globalSuspicion - 10);
         this.audio.playBellSabotage();
         this.emitParticles(bell.position.clone().setY(2.2), 12, 0x94a3b8, 3.0, 0.5, -2.0, 0.9);
-        this.showBanner(`${bell.name} sabotado.`, 2.2);
+        this.showBanner(`${bell.name} sabotado (+12 Essência pendente).`, 2.2);
         for (const npc of this.npcs) {
           if (npc.state === 'drained') continue;
           if (npc.position.distanceTo(bell.position) <= 22) {
@@ -3680,10 +4152,10 @@ export class VampireGameEngine {
         if (!this.collectedMemories.includes(memory.id)) {
           this.collectedMemories.push(memory.id);
         }
-        this.essence += 15;
+        this.pendingEssence += 15;
         this.audio.playMemoryCollect();
         this.emitParticles(memory.position.clone().setY(memory.position.y + 0.9), 20, 0x818cf8, 3.8, 0.65, 0.5, 1.0);
-        this.showBanner(`Memória Recuperada: ${memory.title}`, 2.8);
+        this.showBanner(`Memória Recuperada: ${memory.title} (+15 Essência pendente)`, 2.8);
         this.pushHudSnapshot(true);
       }
     }
@@ -3721,9 +4193,6 @@ export class VampireGameEngine {
           this.castAnimTimer = 0.22;
           this.emitDarkSmoke(this.playerPos.clone().setY(this.playerPos.y + 0.9), 6, 0.55);
           this.audio.playSnuffLamp();
-          if (this.obfuscateTimer <= 0 && !this.hasSkill('amal_eclipse')) {
-            this.reportSupernaturalWitness('Extinção Sombria', 14.5, 9, 5);
-          }
         }
       }
     }
@@ -3793,6 +4262,63 @@ export class VampireGameEngine {
           this.reportSupernaturalWitness('Mortalha Abissal', 15.0, 12, 7);
         }
         this.showBanner('Mortalha Abissal — Trevas vivas cobrem sua presença!', 2.5);
+      }
+    }
+
+    // Tenebrosidade Nv.3B: Pulso de Escuridão — 18 Blood (Alley escape burst: snuffs lamps, spawns smoke, stuns pursuers & clears alert)
+    if (
+      this.justPressed.has(this.hotkeys.darknessPulse) &&
+      this.canUsePower('darknessPulse') &&
+      this.cooldowns.darknessPulse <= 0
+    ) {
+      if (this.blood < 18) {
+        this.showBanner('Sangue insuficiente.', 1.8);
+      } else {
+        this.blood -= 18;
+        this.cooldowns.darknessPulse = this.getSkillCooldownMax('darknessPulse');
+        this.castAnimTimer = 0.3;
+        this.shadowVeilTimer = Math.max(this.shadowVeilTimer, this.hasSkill('ten_3') ? 4.2 : 3.4);
+        this.darknessPulseTimer = this.darknessPulseMax;
+        this.darknessPulseRing.position.set(this.playerPos.x, this.playerPos.y + 0.12, this.playerPos.z);
+        this.darknessPulseRing.scale.setScalar(1.2);
+        this.darknessPulseMat.opacity = 0.72;
+        this.darknessPulseRing.visible = true;
+        this.shakeIntensity = Math.max(this.shakeIntensity, 0.28);
+        this.audio.playDarknessPulse();
+        this.emitDarkSmoke(this.playerPos.clone().setY(this.playerPos.y + 0.75), 18, 1.35);
+        this.emitParticles(this.playerPos.clone().setY(this.playerPos.y + 1.0), 26, 0x4f46e5, 6.2, 0.65, 0.1, 1.2);
+
+        let snuffedCount = 0;
+        for (const lamp of this.world.lamps) {
+          if (lamp.isLit && lamp.position.distanceTo(this.playerPos) <= 13.0) {
+            this.setLampLit(lamp, false);
+            this.emitDarkSmoke(lamp.position.clone().setY(4.45), 6, 0.65);
+            snuffedCount++;
+          }
+        }
+        let stunnedPursuers = 0;
+        for (const npc of this.npcs) {
+          if (npc.state === 'drained') continue;
+          const d = npc.position.distanceTo(this.playerPos);
+          if (d <= 9.5) {
+            npc.state = 'stunned';
+            npc.stateTimer = 2.6;
+            npc.suspicion = 0;
+            npc.attackWindup = 0;
+            npc.targetBell = null;
+            stunnedPursuers++;
+          } else if (d <= 14.5 && (npc.state === 'alert' || npc.state === 'hunt')) {
+            npc.state = 'curious';
+            npc.suspicion = 0.3;
+            npc.stateTimer = 3.5;
+            npc.attackWindup = 0;
+            npc.targetBell = null;
+          }
+        }
+        this.showBanner(
+          `Pulso de Escuridão: ${snuffedCount} lampiões apagados, ${stunnedPursuers} perseguidores atordoados!`,
+          2.6,
+        );
       }
     }
 
@@ -3868,6 +4394,7 @@ export class VampireGameEngine {
         const tgt = candidate.npc;
         this.feedTarget = tgt;
         this.feedIsAerial = candidate.isAerial;
+        this.feedIsStealth = candidate.isStealth;
         this.feedTakedownKind = candidate.isAerial
           ? 'aerial'
           : tgt.archetype === 'guard' || tgt.archetype === 'bodyguard' || tgt.archetype === 'hunter'
@@ -3906,28 +4433,28 @@ export class VampireGameEngine {
           this.killSlowMoTimer = 1.55;
         }
 
-        // Compute target-specific smooth embrace position (glided smoothly in updatePlayer)
+        // Compute target-specific smooth embrace position kept clear of camera near clipping
         const fwdX = Math.sin(tgt.yaw);
         const fwdZ = Math.cos(tgt.yaw);
         if (this.feedTakedownKind === 'noble') {
           this.feedDesiredPos.set(
-            tgt.position.x + fwdX * 0.72,
+            tgt.position.x + fwdX * 0.88,
             tgt.position.y,
-            tgt.position.z + fwdZ * 0.72,
+            tgt.position.z + fwdZ * 0.88,
           );
         } else if (this.feedTakedownKind === 'cultist') {
           const rightX = Math.cos(tgt.yaw);
           const rightZ = -Math.sin(tgt.yaw);
           this.feedDesiredPos.set(
-            tgt.position.x + rightX * 0.62 - fwdX * 0.42,
+            tgt.position.x + rightX * 0.68 - fwdX * 0.56,
             tgt.position.y,
-            tgt.position.z + rightZ * 0.62 - fwdZ * 0.42,
+            tgt.position.z + rightZ * 0.68 - fwdZ * 0.56,
           );
         } else {
           this.feedDesiredPos.set(
-            tgt.position.x - fwdX * 0.76,
+            tgt.position.x - fwdX * 0.88,
             tgt.position.y,
-            tgt.position.z - fwdZ * 0.76,
+            tgt.position.z - fwdZ * 0.88,
           );
         }
         resolveHorizontal3D(this.feedDesiredPos, 0.48, this.world.volumes, this.world.playableBounds);
@@ -3973,14 +4500,12 @@ export class VampireGameEngine {
       const celerityBonus = this.celerityTimer > 0 ? (this.hasSkill('rap_3') ? 1.55 : 1.42) : 1.0;
       const speed = (crouchActive ? crouchSpeed : 6.4) * batBonus * celerityBonus;
 
+      // Sync character facing with first-person camera look direction
+      this.playerYaw = Math.atan2(-Math.sin(this.camYaw), -Math.cos(this.camYaw));
+
       if (hasMove) {
         _v1.normalize();
         this.playerPos.addScaledVector(_v1, speed * dt);
-        const targetYaw = Math.atan2(_v1.x, _v1.z);
-        let diff = targetYaw - this.playerYaw;
-        while (diff > Math.PI) diff -= Math.PI * 2;
-        while (diff < -Math.PI) diff += Math.PI * 2;
-        this.playerYaw += diff * Math.min(1, dt * 14);
         if (this.isGrounded) {
           this.walkCycle += dt * (crouchActive ? 6.5 : 10.5) * (this.celerityTimer > 0 ? 1.35 : 1.0);
           if (this.batFormTimer <= 0 && this.mistFormTimer <= 0) {
@@ -4057,11 +4582,15 @@ export class VampireGameEngine {
 
     // Heavy Jump Landing Noise & Breakable Prop Collision
     const horizSpeed = dt > 0.0001 ? Math.hypot(this.playerPos.x - prevX, this.playerPos.z - prevZ) / dt : 0;
+    this.lastHorizSpeed = horizSpeed;
 
     if (!this.wasGrounded && this.isGrounded && Math.abs(preLandVelY) > 6.2) {
       const impactMag = Math.abs(preLandVelY);
       const silentLanding =
-        this.hasSkill('ofu_3') || this.mistFormTimer > 0 || (crouchActive && impactMag < 10.2);
+        this.hasSkill('ofu_3') ||
+        this.hasSkill('rap_3b') ||
+        this.mistFormTimer > 0 ||
+        (crouchActive && impactMag < 10.2);
       if (!silentLanding) {
         const landIntensity = THREE.MathUtils.clamp((impactMag - 4.8) * 10.5, 34, 92) * this.weatherNoiseMult;
         const landRadius = THREE.MathUtils.clamp(5.8 + (impactMag - 5.5) * 1.1, 6.0, 14.5) * this.weatherNoiseMult;
@@ -4116,7 +4645,9 @@ export class VampireGameEngine {
     this.vampire.root.rotation.y = this.playerYaw;
 
     const batActive = this.batFormTimer > 0;
-    this.vampire.bodyPivot.visible = !batActive;
+    const isFirstPersonView = this.phase === 'playing' && !this.astralActive;
+    this.vampire.bodyPivot.visible = !batActive && !isFirstPersonView;
+    this.vampire.contactShadow.visible = !isFirstPersonView;
     this.vampire.batRing.visible = batActive;
     if (batActive) {
       this.vampire.batRing.rotation.y += dt * 7.5;
@@ -4204,9 +4735,9 @@ export class VampireGameEngine {
     let targetLeftForearmX = crouchActive ? -0.78 : isMoving ? -0.45 : -0.22;
     let targetRightForearmX = crouchActive ? -0.78 : isMoving ? -0.45 : -0.22;
     let targetCapeX = crouchActive && this.isGrounded
-      ? 0.48 + Math.abs(stride) * 0.32
-      : 0.14 + Math.abs(stride) * 0.42 + (this.celerityTimer > 0 && isMoving ? 0.35 : 0);
-    const targetCapeZ = crouchActive && this.isGrounded ? Math.sin(this.walkCycle) * 0.08 : 0;
+      ? 0.36 + Math.abs(stride) * 0.25
+      : 0.06 + Math.abs(stride) * 0.32 + (this.celerityTimer > 0 && isMoving ? 0.28 : 0);
+    let targetCapeZ = crouchActive && this.isGrounded ? Math.sin(this.walkCycle) * 0.06 : 0;
 
     if (!this.isGrounded) {
       if (this.playerVelY > 1.2) {
@@ -4258,26 +4789,71 @@ export class VampireGameEngine {
       targetRightArmZ = 0.32;
     }
 
-    this.vampire.bodyPivot.rotation.x = THREE.MathUtils.damp(this.vampire.bodyPivot.rotation.x, targetBodyPitch, 12, dt);
-    this.vampire.spinePivot.rotation.x = THREE.MathUtils.damp(this.vampire.spinePivot.rotation.x, targetSpineX, 12, dt);
-    this.vampire.spinePivot.rotation.y = THREE.MathUtils.damp(this.vampire.spinePivot.rotation.y, targetSpineY, 12, dt);
-    this.vampire.head.rotation.x = THREE.MathUtils.damp(this.vampire.head.rotation.x, targetHeadX, 12, dt);
-    this.vampire.leftLeg.rotation.x = THREE.MathUtils.damp(this.vampire.leftLeg.rotation.x, targetLeftLeg, 14, dt);
-    this.vampire.rightLeg.rotation.x = THREE.MathUtils.damp(this.vampire.rightLeg.rotation.x, targetRightLeg, 14, dt);
-    this.vampire.leftShin.rotation.x = THREE.MathUtils.damp(this.vampire.leftShin.rotation.x, targetLeftShin, 14, dt);
-    this.vampire.rightShin.rotation.x = THREE.MathUtils.damp(this.vampire.rightShin.rotation.x, targetRightShin, 14, dt);
+    let targetSpineZ = 0;
 
     if (this.clawSlashTimer > 0) {
-      const slashProg = 1 - this.clawSlashTimer / 0.22;
-      const comboSign = this.clawComboStep === 0 ? 1 : -1;
-      this.vampire.spinePivot.rotation.y = comboSign * (0.45 - slashProg * 0.9);
-      this.vampire.leftArm.rotation.set(-1.55 + slashProg * 2.1, 0, -0.25);
-      this.vampire.rightArm.rotation.set(-1.55 + slashProg * 2.1, 0, 0.25);
-      this.vampire.leftForearm.rotation.x = -0.35;
-      this.vampire.rightForearm.rotation.x = -0.35;
+      const slashProg = 1 - this.clawSlashTimer / Math.max(0.05, this.clawSlashDuration);
+      const arc = Math.min(1, slashProg * 1.35);
+      const ease = 1 - Math.pow(1 - arc, 3);
+      const step = this.clawActiveComboStep;
+
+      if (step === 0) {
+        // Combo 1: Right-arm sweeping cross-slash + left counter-balance
+        targetSpineY = 0.48 - ease * 1.06;
+        targetSpineX = 0.24 + Math.sin(ease * Math.PI) * 0.14;
+        targetSpineZ = -0.1 + ease * 0.2;
+        this.vampire.rightArm.rotation.set(
+          -1.92 + ease * 1.62,
+          -0.32 + ease * 0.88,
+          0.68 - ease * 0.92,
+        );
+        this.vampire.rightForearm.rotation.x = -0.82 + ease * 0.52;
+        this.vampire.leftArm.rotation.set(-0.35 + ease * 0.78, 0, -0.26);
+        this.vampire.leftForearm.rotation.x = -0.68;
+        targetCapeX = 0.54 + Math.sin(slashProg * Math.PI) * 0.5;
+        targetCapeZ = 0.24 * (1 - ease * 1.8);
+      } else if (step === 1) {
+        // Combo 2: Left-arm sweeping cross-slash + right counter-balance
+        targetSpineY = -0.5 + ease * 1.08;
+        targetSpineX = 0.26 + Math.sin(ease * Math.PI) * 0.14;
+        targetSpineZ = 0.1 - ease * 0.2;
+        this.vampire.leftArm.rotation.set(
+          -1.92 + ease * 1.62,
+          0.32 - ease * 0.88,
+          -0.68 + ease * 0.92,
+        );
+        this.vampire.leftForearm.rotation.x = -0.82 + ease * 0.52;
+        this.vampire.rightArm.rotation.set(-0.35 + ease * 0.78, 0, 0.26);
+        this.vampire.rightForearm.rotation.x = -0.68;
+        targetCapeX = 0.58 + Math.sin(slashProg * Math.PI) * 0.52;
+        targetCapeZ = -0.24 * (1 - ease * 1.8);
+      } else {
+        // Combo 3: Double-claw predatory lunge
+        targetBodyPitch = 0.15 * Math.sin(slashProg * Math.PI);
+        targetSpineY = 0;
+        targetSpineX = 0.12 + ease * 0.36;
+        targetSpineZ = 0;
+        targetHeadX = -0.2 * ease;
+        this.vampire.leftArm.rotation.set(
+          -2.05 + ease * 1.82,
+          -0.25 + ease * 0.65,
+          -0.72 + ease * 0.54,
+        );
+        this.vampire.rightArm.rotation.set(
+          -2.05 + ease * 1.82,
+          0.25 - ease * 0.65,
+          0.72 - ease * 0.54,
+        );
+        this.vampire.leftForearm.rotation.x = -0.92 + ease * 0.68;
+        this.vampire.rightForearm.rotation.x = -0.92 + ease * 0.68;
+        targetCapeX = 0.66 + Math.sin(slashProg * Math.PI) * 0.56;
+        targetCapeZ = Math.sin(slashProg * Math.PI * 2) * 0.1;
+      }
     } else {
       this.vampire.leftArm.rotation.x = THREE.MathUtils.damp(this.vampire.leftArm.rotation.x, targetLeftArmX, 12, dt);
       this.vampire.rightArm.rotation.x = THREE.MathUtils.damp(this.vampire.rightArm.rotation.x, targetRightArmX, 12, dt);
+      this.vampire.leftArm.rotation.y = THREE.MathUtils.damp(this.vampire.leftArm.rotation.y, 0, 14, dt);
+      this.vampire.rightArm.rotation.y = THREE.MathUtils.damp(this.vampire.rightArm.rotation.y, 0, 14, dt);
       this.vampire.leftArm.rotation.z = THREE.MathUtils.damp(this.vampire.leftArm.rotation.z, targetLeftArmZ, 12, dt);
       this.vampire.rightArm.rotation.z = THREE.MathUtils.damp(this.vampire.rightArm.rotation.z, targetRightArmZ, 12, dt);
       this.vampire.leftForearm.rotation.x = THREE.MathUtils.damp(
@@ -4294,8 +4870,20 @@ export class VampireGameEngine {
       );
     }
 
-    this.vampire.cape.rotation.x = THREE.MathUtils.damp(this.vampire.cape.rotation.x, targetCapeX, 10, dt);
-    this.vampire.cape.rotation.z = THREE.MathUtils.damp(this.vampire.cape.rotation.z, targetCapeZ, 10, dt);
+    const comboSnapRate = this.clawSlashTimer > 0 ? 22 : 12;
+    this.vampire.bodyPivot.rotation.x = THREE.MathUtils.damp(this.vampire.bodyPivot.rotation.x, targetBodyPitch, comboSnapRate, dt);
+    this.vampire.spinePivot.rotation.x = THREE.MathUtils.damp(this.vampire.spinePivot.rotation.x, targetSpineX, comboSnapRate, dt);
+    this.vampire.spinePivot.rotation.y = THREE.MathUtils.damp(this.vampire.spinePivot.rotation.y, targetSpineY, comboSnapRate, dt);
+    this.vampire.spinePivot.rotation.z = THREE.MathUtils.damp(this.vampire.spinePivot.rotation.z, targetSpineZ, comboSnapRate, dt);
+    this.vampire.head.rotation.x = THREE.MathUtils.damp(this.vampire.head.rotation.x, targetHeadX, comboSnapRate, dt);
+    this.vampire.leftLeg.rotation.x = THREE.MathUtils.damp(this.vampire.leftLeg.rotation.x, targetLeftLeg, 14, dt);
+    this.vampire.rightLeg.rotation.x = THREE.MathUtils.damp(this.vampire.rightLeg.rotation.x, targetRightLeg, 14, dt);
+    this.vampire.leftShin.rotation.x = THREE.MathUtils.damp(this.vampire.leftShin.rotation.x, targetLeftShin, 14, dt);
+    this.vampire.rightShin.rotation.x = THREE.MathUtils.damp(this.vampire.rightShin.rotation.x, targetRightShin, 14, dt);
+
+    const capeSnapRate = this.clawSlashTimer > 0 ? 18 : 10;
+    this.vampire.cape.rotation.x = THREE.MathUtils.damp(this.vampire.cape.rotation.x, targetCapeX, capeSnapRate, dt);
+    this.vampire.cape.rotation.z = THREE.MathUtils.damp(this.vampire.cape.rotation.z, targetCapeZ, capeSnapRate, dt);
     this.vampire.contactShadow.position.y = Math.max(0.02, floorY - this.playerPos.y + 0.02);
 
     // Compute Stealth Exposure (0..100)
@@ -4364,6 +4952,10 @@ export class VampireGameEngine {
 
   private findFeedCandidate(): { npc: NpcEntity; isStealth: boolean; isAerial: boolean } | null {
     const baseReach = 2.55 + (this.hasSkill('met_1') ? 1.4 : 0);
+    const hasCornicePlunge = this.hasSkill('rap_3b') || this.hasSkill('amal_nocturnal_stalker');
+    const maxVertGap = this.hasSkill('amal_nocturnal_stalker') ? 13.0 : hasCornicePlunge ? 11.5 : 7.5;
+    const minVertGap = hasCornicePlunge ? 1.35 : 1.6;
+    const maxAerialHoriz = hasCornicePlunge ? 5.5 : 3.8;
     let best: NpcEntity | null = null;
     let bestScore = Infinity;
     let bestStealth = false;
@@ -4375,7 +4967,11 @@ export class VampireGameEngine {
 
       const horizDist = Math.hypot(npc.position.x - this.playerPos.x, npc.position.z - this.playerPos.z);
       const vertGap = this.playerPos.y - npc.position.y;
-      const isAerial = vertGap >= 1.6 && vertGap <= 7.5 && horizDist <= 3.8;
+      const isAerial =
+        vertGap >= minVertGap &&
+        vertGap <= maxVertGap &&
+        horizDist <= maxAerialHoriz &&
+        (horizDist <= 3.8 || hasLineOfSight(this.playerPos, npc.position, this.world.volumes));
 
       if (!isAerial && (horizDist > baseReach || Math.abs(vertGap) > 1.7)) continue;
 
@@ -4394,23 +4990,31 @@ export class VampireGameEngine {
 
       if (!canAssassinateGuard) continue;
 
+      const playerCloaked =
+        this.obfuscateTimer > 0 || this.abyssalShroudTimer > 0 || this.shadowVeilTimer > 0;
+      const npcUnaware =
+        npc.state === 'patrol' ||
+        npc.state === 'resting' ||
+        npc.state === 'curious' ||
+        npc.state === 'stunned' ||
+        npc.state === 'possessed' ||
+        (npc.state === 'suspicious' && (!isGuardTier || this.hasSkill('met_3')));
+
       if (horizDist < bestScore) {
         best = npc;
         bestScore = horizDist;
-        bestStealth =
-          isAerial ||
-          npc.state === 'patrol' ||
-          npc.state === 'resting' ||
-          npc.state === 'curious' ||
-          npc.state === 'stunned' ||
-          npc.state === 'possessed';
+        bestStealth = isAerial || playerCloaked || npcUnaware;
         bestAerial = isAerial;
       }
     }
     return best ? { npc: best, isStealth: bestStealth, isAerial: bestAerial } : null;
   }
 
-  private updateGuardVisionConeMesh(npc: NpcEntity, effectiveRange: number): void {
+  private updateNpcVisionConeMesh(
+    npc: NpcEntity,
+    effectiveRange: number,
+    halfFov: number,
+  ): void {
     const geo = npc.rig.visionConeGeo;
     if (!geo) return;
     const posAttr = geo.attributes.position as THREE.BufferAttribute;
@@ -4420,7 +5024,7 @@ export class VampireGameEngine {
 
     for (let i = 0; i <= VISION_CONE_RAYS; i++) {
       const t = i / VISION_CONE_RAYS;
-      const localAngle = -GUARD_HALF_FOV + t * (GUARD_HALF_FOV * 2);
+      const localAngle = -halfFov + t * (halfFov * 2);
       const localDirX = Math.sin(localAngle);
       const localDirZ = Math.cos(localAngle);
 
@@ -4436,7 +5040,7 @@ export class VampireGameEngine {
         if (d < hitDist) hitDist = d;
       }
 
-      posAttr.setXYZ(i + 1, localDirX * hitDist, 0.06, localDirZ * hitDist);
+      posAttr.setXYZ(i + 1, localDirX * hitDist, 0.045, localDirZ * hitDist);
     }
     posAttr.needsUpdate = true;
   }
@@ -4485,12 +5089,52 @@ export class VampireGameEngine {
     const susRateMult = 1 + (this.globalSuspicion / 100) * 0.65;
     const senseVal = this.sharedUniforms.uCrimsonSense.value;
     const auspRange = this.hasSkill('aus_2a') ? 52 : 36;
-    const showVisionCones = senseVal > 0.08;
+    const isPlayerStealth =
+      this.isCrouching ||
+      this.obfuscateTimer > 0 ||
+      this.shadowVeilTimer > 0 ||
+      this.abyssalShroudTimer > 0;
+    const playerSafeCemetery = this.isInSafeCemetery(this.playerPos);
 
     for (const npc of this.npcs) {
       if (npc.state === 'drained') {
         npc.rig.crimsonPulseMesh.visible = false;
         if (npc.rig.visionCone) npc.rig.visionCone.visible = false;
+
+        // Weighted defeat collapse animation onto the cobblestones
+        if (npc.rig.root.visible && npc.deathFallTimer > 0) {
+          npc.deathFallTimer = Math.max(0, npc.deathFallTimer - dt);
+          const p = 1 - npc.deathFallTimer / 0.45;
+          const fallCurve =
+            p < 0.8
+              ? Math.pow(p / 0.8, 2.0)
+              : 1.0 - Math.sin(((p - 0.8) / 0.2) * Math.PI) * 0.08;
+          npc.rig.bodyGroup.rotation.x = THREE.MathUtils.lerp(
+            npc.deathFallStartRotX,
+            Math.PI / 2,
+            fallCurve,
+          );
+          npc.rig.bodyGroup.position.y = THREE.MathUtils.lerp(
+            npc.deathFallStartY,
+            0.22,
+            fallCurve,
+          );
+          npc.rig.bodyGroup.rotation.z = THREE.MathUtils.damp(
+            npc.rig.bodyGroup.rotation.z,
+            npc.hitRecoilDir * 0.14,
+            10,
+            dt,
+          );
+          npc.rig.leftArm.rotation.x = THREE.MathUtils.damp(npc.rig.leftArm.rotation.x, -0.35, 10, dt);
+          npc.rig.rightArm.rotation.x = THREE.MathUtils.damp(npc.rig.rightArm.rotation.x, 0.28, 10, dt);
+          npc.rig.leftArm.rotation.z = THREE.MathUtils.damp(npc.rig.leftArm.rotation.z, -0.25, 10, dt);
+          npc.rig.rightArm.rotation.z = THREE.MathUtils.damp(npc.rig.rightArm.rotation.z, 0.25, 10, dt);
+          if (npc.deathFallTimer <= 0) {
+            npc.rig.bodyGroup.rotation.x = Math.PI / 2;
+            npc.rig.bodyGroup.position.y = 0.22;
+          }
+        }
+
         npc.respawnTimer -= dt;
         if (npc.respawnTimer <= 0) {
           npc.state = 'patrol';
@@ -4501,12 +5145,20 @@ export class VampireGameEngine {
           npc.restCooldown = 8 + Math.random() * 8;
           npc.shiftTimer = 0;
           npc.attackWindup = 0;
+          npc.attackSwingTimer = 0;
           npc.hitStaggerTimer = 0;
+          npc.deathFallTimer = 0;
+          npc.steerAngleOffset = 0;
+          npc.stuckTimer = 0;
           npc.targetBell = null;
           npc.corpseHidden = false;
           npc.corpseDiscovered = false;
           npc.rig.bodyGroup.rotation.set(0, 0, 0);
           npc.rig.bodyGroup.position.y = 0;
+          npc.rig.leftArm.rotation.set(0, 0, 0);
+          npc.rig.rightArm.rotation.set(0, 0, 0);
+          npc.rig.leftLeg.rotation.set(0, 0, 0);
+          npc.rig.rightLeg.rotation.set(0, 0, 0);
           if (npc.escortTarget && npc.escortTarget.state !== 'drained') {
             npc.position.copy(npc.escortTarget.position).add(_v1.set(1.5, 0, -1.5));
           } else {
@@ -4519,9 +5171,15 @@ export class VampireGameEngine {
         continue;
       }
 
+      npc.frameMoveDirX = 0;
+      npc.frameMoveDirZ = 0;
+      npc.frameMoveSpeed = 0;
+      npc.frameIsMoving = false;
+
       const isGuardRole =
         npc.archetype === 'guard' || npc.archetype === 'bodyguard' || npc.archetype === 'hunter';
       npc.attackCooldown = Math.max(0, npc.attackCooldown - dt);
+      npc.attackSwingTimer = Math.max(0, npc.attackSwingTimer - dt);
       npc.boltCooldown = Math.max(0, npc.boltCooldown - dt);
       npc.hitStaggerTimer = Math.max(0, npc.hitStaggerTimer - dt);
       npc.restCooldown = Math.max(0, npc.restCooldown - dt);
@@ -4566,7 +5224,6 @@ export class VampireGameEngine {
           while (yDiff > Math.PI) yDiff -= Math.PI * 2;
           while (yDiff < -Math.PI) yDiff += Math.PI * 2;
           npc.yaw += yDiff * Math.min(1, dt * 12);
-          npc.rig.root.rotation.y = npc.yaw;
         }
         const t = this.sharedUniforms.uTime.value;
         const neckExpose = -0.32 * Math.sin(Math.min(1, feedProg * 1.45) * Math.PI * 0.5);
@@ -4576,23 +5233,17 @@ export class VampireGameEngine {
         npc.rig.leftArm.rotation.x = 0.38 + Math.sin(t * 15) * 0.14;
         npc.rig.rightArm.rotation.x = 0.46 - Math.cos(t * 15) * 0.14;
         if (npc.rig.visionCone) npc.rig.visionCone.visible = false;
-        this.updateNpcAlertIndicator(npc);
         continue;
       }
 
       if (npc.hitStaggerTimer > 0) {
-        npc.rig.bodyGroup.rotation.x = -0.18;
+        if (npc.rig.visionCone) npc.rig.visionCone.visible = false;
         continue;
-      } else {
-        npc.rig.bodyGroup.rotation.x = 0;
-        npc.rig.bodyGroup.position.y = 0;
       }
 
       if (npc.state === 'stunned') {
         npc.stateTimer -= dt;
-        npc.rig.bodyGroup.rotation.z = Math.sin(this.sharedUniforms.uTime.value * 18) * 0.1;
         if (npc.rig.visionCone) npc.rig.visionCone.visible = false;
-        this.updateNpcAlertIndicator(npc);
         if (npc.stateTimer <= 0) {
           npc.rig.bodyGroup.rotation.z = 0;
           npc.state = 'patrol';
@@ -4608,26 +5259,13 @@ export class VampireGameEngine {
           _v1.set(npc.possessPos.x - npc.position.x, 0, npc.possessPos.z - npc.position.z).normalize();
           const pSpeed = npc.speed * 1.15;
           npc.position.addScaledVector(_v1, pSpeed * dt);
-          resolveHorizontal3D(npc.position, 0.45, this.world.volumes, this.world.playableBounds);
-          const npcFloor = getFloorHeightAt(
-            npc.position.x,
-            npc.position.z,
-            npc.position.y,
-            0.35,
-            this.world.volumes,
-            this.world.cryptBounds,
-          );
-          npc.position.y = THREE.MathUtils.damp(npc.position.y, npcFloor, 12, dt);
+          npc.frameMoveDirX = _v1.x;
+          npc.frameMoveDirZ = _v1.z;
+          npc.frameMoveSpeed = pSpeed;
+          npc.frameIsMoving = true;
           npc.yaw = Math.atan2(_v1.x, _v1.z);
           npc.walkPhase += dt * pSpeed * 2.8;
         }
-        npc.rig.root.position.copy(npc.position);
-        npc.rig.root.rotation.y = npc.yaw;
-        const pSwing = distPos > 0.6 ? Math.sin(npc.walkPhase) * 0.45 : 0;
-        npc.rig.leftLeg.rotation.x = THREE.MathUtils.damp(npc.rig.leftLeg.rotation.x, pSwing, 10, dt);
-        npc.rig.rightLeg.rotation.x = THREE.MathUtils.damp(npc.rig.rightLeg.rotation.x, -pSwing, 10, dt);
-        npc.rig.leftArm.rotation.x = THREE.MathUtils.damp(npc.rig.leftArm.rotation.x, -0.75, 8, dt);
-        npc.rig.rightArm.rotation.x = THREE.MathUtils.damp(npc.rig.rightArm.rotation.x, -0.75, 8, dt);
 
         for (const other of this.npcs) {
           if (
@@ -4644,7 +5282,6 @@ export class VampireGameEngine {
           }
         }
 
-        this.updateNpcAlertIndicator(npc);
         if (npc.possessTimer <= 0) {
           npc.state = 'patrol';
           npc.suspicion = 0;
@@ -4653,7 +5290,11 @@ export class VampireGameEngine {
         continue;
       }
 
-      if (npc.rig.visionCone) npc.rig.visionCone.visible = showVisionCones;
+      const showConeForNpc =
+        (senseVal > 0.08 && horizDist <= auspRange) ||
+        (isPlayerStealth && horizDist <= 24.0) ||
+        horizDist <= 14.5;
+      if (npc.rig.visionCone) npc.rig.visionCone.visible = showConeForNpc;
 
       // Register encounter & tactical observations for Grimoire Dossier
       if (
@@ -4701,21 +5342,24 @@ export class VampireGameEngine {
       const heightPenalty = this.playerPos.y - npc.position.y > 2.8 ? 0.42 : 1.0;
       const effectiveSightRange = baseSight * (0.45 + (this.exposure / 100) * 0.55) * heightPenalty;
 
-      if (isGuardRole) {
-        this.updateGuardVisionConeMesh(
-          npc,
-          GUARD_VISION_RANGE * susSightMult * this.weatherVisionMult * roleSightMult,
-        );
+      if (showConeForNpc) {
+        const coneRange = isGuardRole
+          ? GUARD_VISION_RANGE * susSightMult * this.weatherVisionMult * roleSightMult
+          : baseSight;
+        const coneHalfFov = isGuardRole ? GUARD_HALF_FOV : Math.acos(0.42);
+        this.updateNpcVisionConeMesh(npc, coneRange, coneHalfFov);
       }
 
       let seesPlayer = false;
+      const npcInSafeCemetery = this.isInSafeCemetery(npc.position);
+      const blockSightInCemetery = playerSafeCemetery && !npcInSafeCemetery;
       const disguisedSafe =
         this.falseVisageTimer > 0 &&
         !isFeeding &&
         npc.state !== 'alert' &&
         npc.state !== 'hunt' &&
         horizDist > 2.2;
-      if (!playerHidden && !disguisedSafe && horizDist < effectiveSightRange && vertDiff < 6.5) {
+      if (!playerHidden && !blockSightInCemetery && !disguisedSafe && horizDist < effectiveSightRange && vertDiff < 6.5) {
         _v1.set(this.playerPos.x - npc.position.x, 0, this.playerPos.z - npc.position.z).normalize();
         _v2.set(Math.sin(npc.yaw), 0, Math.cos(npc.yaw));
         const dot = _v1.dot(_v2);
@@ -5014,17 +5658,35 @@ export class VampireGameEngine {
         this.weather === 'rain' && (npc.archetype === 'citizen' || npc.archetype === 'noble') ? 1.22 : 1.0;
       let moveSpeed = npc.speed * (isGuardRole ? susSpeedMult : rainCitizenMult);
 
-      if (npc.targetBell && (npc.state === 'flee' || ((npc.state === 'alert' || npc.state === 'hunt') && horizDist > 6.5))) {
+      if (playerSafeCemetery && !npcInSafeCemetery && (npc.state === 'alert' || npc.state === 'hunt' || npc.state === 'suspicious')) {
+        npc.suspicion = Math.max(0, npc.suspicion - dt * 1.2);
+        npc.stateTimer = Math.max(0, npc.stateTimer - dt * 2.0);
+        if (npc.state === 'alert' || npc.state === 'hunt') {
+          npc.state = 'suspicious';
+          npc.attackWindup = 0;
+          npc.targetBell = null;
+        }
+      }
+      if (npcInSafeCemetery) {
+        npc.state = 'patrol';
+        npc.suspicion = 0;
+        npc.attackWindup = 0;
+        npc.targetBell = null;
+        moveTarget = npc.route[npc.waypointIndex];
+        moveSpeed *= 1.25;
+      } else if (npc.targetBell && (npc.state === 'flee' || ((npc.state === 'alert' || npc.state === 'hunt') && horizDist > 6.5))) {
         moveTarget = npc.targetBell.position;
         moveSpeed *= 1.5;
       } else if (npc.state === 'resting') {
         moveTarget = null;
         if (npc.archetype === 'cultist') {
-          // Chanting pose with raised arms
-          npc.rig.leftArm.rotation.x = -1.85;
-          npc.rig.rightArm.rotation.x = -1.85;
+          if (Math.random() < 0.08) {
+            const sparkHex = npc.name === 'Boticário' ? 0x34d399 : 0xb366ff;
+            this.emitParticles(npc.position.clone().setY(npc.position.y + 1.15), 1, sparkHex, 0.9, 0.45, 0.4, 0.65);
+          }
+        } else if (npc.archetype === 'noble') {
+          npc.yaw += Math.sin(this.sharedUniforms.uTime.value * 0.9 + npc.id) * dt * 0.38;
         } else if (isGuardRole) {
-          // Cautious lamp-side scan (wider scan in fog)
           const scanAmp = this.weather === 'fog' ? 1.25 : 0.75;
           npc.yaw += Math.sin(this.sharedUniforms.uTime.value * 1.4 + npc.id) * dt * scanAmp;
         }
@@ -5044,7 +5706,7 @@ export class VampireGameEngine {
         } else {
           moveTarget = npc.route[npc.waypointIndex];
           if (Math.hypot(npc.position.x - moveTarget.x, npc.position.z - moveTarget.z) < 1.05) {
-            // Check for lamp rest (guards) or brief huddle/chant pause (beggars/cultists)
+            // Check for lamp rest (guards), ritual chant (cultists), alley huddle (beggars) or courtly pause (nobles)
             if (npc.restCooldown <= 0) {
               if (npc.archetype === 'guard') {
                 const nearLamp = this.world.lamps.find(
@@ -5059,9 +5721,9 @@ export class VampireGameEngine {
                     (this.weather === 'fog' ? 5.2 : this.weather === 'rain' ? 2.6 : 4.2) + Math.random() * 1.4;
                   moveTarget = null;
                 }
-              } else if (npc.archetype === 'beggar' || npc.archetype === 'cultist') {
+              } else if (npc.archetype === 'beggar' || npc.archetype === 'cultist' || npc.archetype === 'noble') {
                 npc.state = 'resting';
-                npc.restTimer = 3.2 + Math.random() * 1.8;
+                npc.restTimer = (npc.archetype === 'noble' ? 2.6 : 3.2) + Math.random() * 1.6;
                 moveTarget = null;
               }
             }
@@ -5072,28 +5734,30 @@ export class VampireGameEngine {
           }
         }
       } else if (npc.state === 'curious' || npc.state === 'suspicious') {
-        const distToInvestigate = Math.hypot(
-          npc.investigatePos.x - npc.position.x,
-          npc.investigatePos.z - npc.position.z,
-        );
-        if (distToInvestigate > 1.45 && !npc.investigateArrived) {
-          moveTarget = npc.investigatePos;
-          moveSpeed *= npc.state === 'curious' ? 0.92 : isGuardRole ? 1.12 : 0.96;
+        if (playerSafeCemetery && this.isInSafeCemetery(npc.investigatePos)) {
+          moveTarget = npc.route[npc.waypointIndex];
         } else {
-          if (!npc.investigateArrived) {
-            npc.investigateArrived = true;
-            npc.stateTimer = Math.max(npc.stateTimer, 3.0);
+          const distToInvestigate = Math.hypot(
+            npc.investigatePos.x - npc.position.x,
+            npc.investigatePos.z - npc.position.z,
+          );
+          if (distToInvestigate > 1.45 && !npc.investigateArrived) {
+            moveTarget = npc.investigatePos;
+            moveSpeed *= npc.state === 'curious' ? 0.92 : isGuardRole ? 1.12 : 0.96;
+          } else {
+            if (!npc.investigateArrived) {
+              npc.investigateArrived = true;
+              npc.stateTimer = Math.max(npc.stateTimer, 3.0);
+            }
+            npc.yaw += Math.sin(this.sharedUniforms.uTime.value * 2.4 + npc.id) * dt * 1.5;
+            moveTarget = null;
           }
-          npc.yaw += Math.sin(this.sharedUniforms.uTime.value * 2.4 + npc.id) * dt * 1.5;
-          moveTarget = null;
         }
       } else if (npc.state === 'alert' || npc.state === 'hunt') {
         if (!isGuardRole) {
           // Cultist stands & chants facing player
           _v1.subVectors(this.playerPos, npc.position);
           npc.yaw = Math.atan2(_v1.x, _v1.z);
-          npc.rig.leftArm.rotation.x = -2.1;
-          npc.rig.rightArm.rotation.x = -2.1;
           moveTarget = null;
         } else {
           // Coordinate nearby guards within 14m during active hunt
@@ -5126,7 +5790,6 @@ export class VampireGameEngine {
           ) {
             _v1.subVectors(this.playerPos, npc.position);
             npc.yaw = Math.atan2(_v1.x, _v1.z);
-            npc.rig.rightArm.rotation.x = -1.32;
             moveTarget = npc.position;
             moveSpeed *= 0.25;
             npc.attackWindup = 0;
@@ -5146,14 +5809,13 @@ export class VampireGameEngine {
             npc.yaw = Math.atan2(_v1.x, _v1.z);
             if (npc.attackCooldown <= 0) {
               npc.attackWindup += dt;
-              npc.rig.rightArm.rotation.x = -1.6 * Math.min(1, npc.attackWindup / 0.52);
               if (npc.attackWindup >= 0.52) {
                 npc.attackWindup = 0;
+                npc.attackSwingTimer = 0.24;
                 npc.attackCooldown = Math.max(
                   0.8,
                   (npc.state === 'hunt' ? 1.15 : 1.35) - (this.globalSuspicion / 100) * 0.35,
                 );
-                npc.rig.rightArm.rotation.x = 0.4;
                 if (horizDist < 2.9 && vertDiff < 2.0 && this.dashTimer <= 0 && this.mistFormTimer <= 0) {
                   const dmg =
                     (npc.archetype === 'hunter' ? 23 : npc.archetype === 'bodyguard' ? 21 : 16) +
@@ -5193,34 +5855,203 @@ export class VampireGameEngine {
         moveSpeed *= 1.65;
       }
 
-      if (moveTarget && Math.hypot(npc.position.x - moveTarget.x, npc.position.z - moveTarget.z) > 0.35) {
-        _v1.set(moveTarget.x - npc.position.x, 0, moveTarget.z - npc.position.z).normalize();
+      const distToTarget = moveTarget
+        ? Math.hypot(moveTarget.x - npc.position.x, moveTarget.z - npc.position.z)
+        : 0;
+      if (moveTarget && distToTarget > 0.35) {
+        const desX = (moveTarget.x - npc.position.x) / distToTarget;
+        const desZ = (moveTarget.z - npc.position.z) / distToTarget;
 
-        // Check stuck state & apply tangential wall-sliding / smart waypoint recovery
+        // Forward obstacle-avoidance steering using directional probes against height-relevant volumes
+        const lookAhead = Math.min(distToTarget + 0.4, Math.max(1.85, moveSpeed * 0.92));
+        const footY = npc.position.y + 0.65;
+        const headY = npc.position.y + 1.75;
+        const probePad = 0.34;
+        const cHit = probeObstacleClearance(
+          npc.position.x,
+          npc.position.z,
+          desX,
+          desZ,
+          lookAhead,
+          footY,
+          headY,
+          probePad,
+          this.world.volumes,
+        );
+
+        let targetSteerOffset = 0;
+        if (cHit < lookAhead - 0.08) {
+          const sin32 = 0.5299;
+          const cos32 = 0.848;
+          const l1 = probeObstacleClearance(
+            npc.position.x,
+            npc.position.z,
+            desX * cos32 + desZ * sin32,
+            -desX * sin32 + desZ * cos32,
+            lookAhead,
+            footY,
+            headY,
+            probePad,
+            this.world.volumes,
+          );
+          const r1 = probeObstacleClearance(
+            npc.position.x,
+            npc.position.z,
+            desX * cos32 - desZ * sin32,
+            desX * sin32 + desZ * cos32,
+            lookAhead,
+            footY,
+            headY,
+            probePad,
+            this.world.volumes,
+          );
+
+          const sin64 = 0.8988;
+          const cos64 = 0.4384;
+          const l2 = probeObstacleClearance(
+            npc.position.x,
+            npc.position.z,
+            desX * cos64 + desZ * sin64,
+            -desX * sin64 + desZ * cos64,
+            lookAhead,
+            footY,
+            headY,
+            probePad,
+            this.world.volumes,
+          );
+          const r2 = probeObstacleClearance(
+            npc.position.x,
+            npc.position.z,
+            desX * cos64 - desZ * sin64,
+            desX * sin64 + desZ * cos64,
+            lookAhead,
+            footY,
+            headY,
+            probePad,
+            this.world.volumes,
+          );
+
+          const leftScore = l1 + l2 * 0.75 + (npc.avoidSign > 0 ? 0.35 : 0);
+          const rightScore = r1 + r2 * 0.75 + (npc.avoidSign < 0 ? 0.35 : 0);
+          const sign = leftScore >= rightScore ? 1 : -1;
+          const bestInner = sign > 0 ? l1 : r1;
+          const urgency = 0.48 + 0.52 * (1 - cHit / lookAhead);
+          const baseTurn = bestInner >= lookAhead * 0.84 ? 0.62 : 1.16;
+          targetSteerOffset = sign * baseTurn * urgency;
+        }
+
+        npc.steerAngleOffset = THREE.MathUtils.damp(npc.steerAngleOffset, targetSteerOffset, 9, dt);
+        const cs = Math.cos(npc.steerAngleOffset);
+        const sn = Math.sin(npc.steerAngleOffset);
+        const moveDirX = desX * cs + desZ * sn;
+        const moveDirZ = -desX * sn + desZ * cs;
+
+        // 1.3s Stuck Detector: apply lateral unstick nudge & advance/recalculate destination if stalled
         npc.stuckTimer += dt;
-        if (npc.stuckTimer > 0.5) {
-          const movedDist = npc.position.distanceTo(npc.lastStuckCheckPos);
-          if (movedDist < 0.25) {
+        if (npc.stuckTimer >= 1.3) {
+          const movedDist = Math.hypot(
+            npc.position.x - npc.lastStuckCheckPos.x,
+            npc.position.z - npc.lastStuckCheckPos.z,
+          );
+          if (movedDist < 0.55) {
             npc.avoidSign *= -1;
+            const sideX = -desZ * npc.avoidSign;
+            const sideZ = desX * npc.avoidSign;
+            npc.position.x += sideX * 0.42;
+            npc.position.z += sideZ * 0.42;
+            npc.steerAngleOffset = npc.avoidSign * 1.1;
             if (npc.state === 'patrol' && npc.archetype !== 'bodyguard') {
               npc.waypointIndex = this.pickBestWaypoint(npc, npc.waypointIndex);
             } else if (npc.state === 'flee') {
               npc.targetBell = null;
             } else if (npc.state === 'suspicious' || npc.state === 'curious') {
-              npc.stateTimer = Math.min(npc.stateTimer, 0.8);
+              npc.investigateArrived = true;
+              npc.stateTimer = Math.min(npc.stateTimer, 1.4);
+            } else if ((npc.state === 'alert' || npc.state === 'hunt') && playerHidden) {
+              npc.stateTimer = Math.min(npc.stateTimer, 2.0);
             }
           }
           npc.lastStuckCheckPos.copy(npc.position);
           npc.stuckTimer = 0;
         }
 
+        _v1.set(moveDirX, 0, moveDirZ);
         npc.position.addScaledVector(_v1, moveSpeed * dt);
+        npc.frameMoveDirX = moveDirX;
+        npc.frameMoveDirZ = moveDirZ;
+        npc.frameMoveSpeed = moveSpeed;
+        npc.frameIsMoving = true;
+
+        const targetYaw = Math.atan2(moveDirX, moveDirZ);
+        let diff = targetYaw - npc.yaw;
+        while (diff > Math.PI) diff -= Math.PI * 2;
+        while (diff < -Math.PI) diff += Math.PI * 2;
+        npc.yaw += diff * Math.min(1, dt * 8);
+        npc.walkPhase += dt * moveSpeed * 2.8;
+      } else {
+        npc.steerAngleOffset = THREE.MathUtils.damp(npc.steerAngleOffset, 0, 10, dt);
+        npc.stuckTimer = 0;
+        npc.lastStuckCheckPos.copy(npc.position);
+      }
+    }
+
+    // Pass 2: Pairwise NPC-to-NPC physical collision & smooth separation (~0.5m radius each)
+    // Executed BEFORE wall/volume checks so separation never pushes any NPC inside walls or fences.
+    const npcMinSep = 1.0;
+    const npcMinSepSq = npcMinSep * npcMinSep;
+    const sepStrength = Math.min(0.85, 0.35 + dt * 16);
+    for (let i = 0; i < this.npcs.length; i++) {
+      const a = this.npcs[i];
+      if (a.state === 'drained') continue;
+      for (let j = i + 1; j < this.npcs.length; j++) {
+        const b = this.npcs[j];
+        if (b.state === 'drained') continue;
+        if (Math.abs(a.position.y - b.position.y) >= 1.8) continue;
+
+        const dx = b.position.x - a.position.x;
+        const dz = b.position.z - a.position.z;
+        const distSq = dx * dx + dz * dz;
+        if (distSq < npcMinSepSq) {
+          const dist = Math.sqrt(distSq);
+          const overlap = npcMinSep - dist;
+          let nx: number;
+          let nz: number;
+          if (dist > 0.0001) {
+            nx = dx / dist;
+            nz = dz / dist;
+          } else {
+            const fallbackAngle = a.id * 1.73 + b.id * 2.41;
+            nx = Math.cos(fallbackAngle);
+            nz = Math.sin(fallbackAngle);
+          }
+
+          const push = Math.min(0.42, overlap * sepStrength);
+          const pinA = isFeeding && a === this.feedTarget;
+          const pinB = isFeeding && b === this.feedTarget;
+          if (pinA && pinB) continue;
+          const wA = pinA ? 0 : pinB ? 1 : 0.5;
+          const wB = pinB ? 0 : pinA ? 1 : 0.5;
+
+          a.position.x -= nx * push * wA;
+          a.position.z -= nz * push * wA;
+          b.position.x += nx * push * wB;
+          b.position.z += nz * push * wB;
+        }
+      }
+    }
+
+    // Pass 3: Wall/Volume collision resolution, ground elevation, and procedural combat/locomotion animation
+    const uTime = this.sharedUniforms.uTime.value;
+    for (const npc of this.npcs) {
+      if (npc.state === 'drained') continue;
+
+      if (!(isFeeding && npc === this.feedTarget)) {
         const hitWall = resolveHorizontal3D(npc.position, 0.45, this.world.volumes, this.world.playableBounds);
-        if (hitWall) {
-          const sideX = -_v1.z * npc.avoidSign;
-          const sideZ = _v1.x * npc.avoidSign;
-          npc.position.x += sideX * moveSpeed * dt * 0.95;
-          npc.position.z += sideZ * moveSpeed * dt * 0.95;
+        if (hitWall && npc.frameIsMoving && npc.frameMoveSpeed > 0) {
+          const sideX = -npc.frameMoveDirZ * npc.avoidSign;
+          const sideZ = npc.frameMoveDirX * npc.avoidSign;
+          npc.position.x += sideX * npc.frameMoveSpeed * dt * 0.95;
+          npc.position.z += sideZ * npc.frameMoveSpeed * dt * 0.95;
           resolveHorizontal3D(npc.position, 0.45, this.world.volumes, this.world.playableBounds);
         }
 
@@ -5233,46 +6064,178 @@ export class VampireGameEngine {
           this.world.cryptBounds,
         );
         npc.position.y = THREE.MathUtils.damp(npc.position.y, npcFloor, 12, dt);
-
-        const targetYaw = Math.atan2(_v1.x, _v1.z);
-        let diff = targetYaw - npc.yaw;
-        while (diff > Math.PI) diff -= Math.PI * 2;
-        while (diff < -Math.PI) diff += Math.PI * 2;
-        npc.yaw += diff * Math.min(1, dt * 8);
-        npc.walkPhase += dt * moveSpeed * 2.8;
       }
 
       npc.rig.root.position.copy(npc.position);
       npc.rig.root.rotation.y = npc.yaw;
-      const isMovingNpc = Boolean(moveTarget);
-      const legSwing = isMovingNpc ? Math.sin(npc.walkPhase) * 0.45 : 0;
-      npc.rig.leftLeg.rotation.x = THREE.MathUtils.damp(npc.rig.leftLeg.rotation.x, legSwing, 10, dt);
-      npc.rig.rightLeg.rotation.x = THREE.MathUtils.damp(npc.rig.rightLeg.rotation.x, -legSwing, 10, dt);
-      if (npc.attackWindup <= 0 && !(npc.archetype === 'cultist' && (npc.state === 'resting' || npc.state === 'alert'))) {
-        const isInvestigatingWithLantern =
-          isGuardRole && (npc.state === 'curious' || npc.state === 'suspicious');
-        const targetLeftArm = isInvestigatingWithLantern
-          ? -1.05
-          : npc.archetype === 'cultist'
-          ? -0.78
-          : legSwing * 0.4;
-        npc.rig.leftArm.rotation.x = THREE.MathUtils.damp(npc.rig.leftArm.rotation.x, targetLeftArm, 8, dt);
-        npc.rig.rightArm.rotation.x = THREE.MathUtils.damp(npc.rig.rightArm.rotation.x, -legSwing * 0.4, 8, dt);
-        if (npc.rig.lanternMat && npc.archetype !== 'cultist') {
-          npc.rig.lanternMat.color.setHex(isInvestigatingWithLantern ? 0xffe08a : 0xffaa44);
+
+      if (isFeeding && npc === this.feedTarget) {
+        this.updateNpcAlertIndicator(npc);
+        continue;
+      }
+
+      const isGuardRole =
+        npc.archetype === 'guard' || npc.archetype === 'bodyguard' || npc.archetype === 'hunter';
+
+      if (npc.hitStaggerTimer > 0) {
+        // Impulse-and-recovery hit recoil curve
+        const t = 1 - npc.hitStaggerTimer / Math.max(0.05, npc.hitStaggerDuration);
+        const recoil = Math.pow(1 - t, 1.55) * Math.sin(Math.min(1, t * 5.0) * Math.PI * 0.5);
+        npc.rig.bodyGroup.rotation.x = -0.46 * recoil;
+        npc.rig.bodyGroup.rotation.z = npc.hitRecoilDir * 0.24 * recoil;
+        npc.rig.bodyGroup.position.y = -0.07 * recoil;
+        npc.rig.leftArm.rotation.x = THREE.MathUtils.damp(
+          npc.rig.leftArm.rotation.x,
+          -0.78 * recoil - 0.15,
+          16,
+          dt,
+        );
+        npc.rig.rightArm.rotation.x = THREE.MathUtils.damp(
+          npc.rig.rightArm.rotation.x,
+          -0.68 * recoil - 0.15,
+          16,
+          dt,
+        );
+        npc.rig.leftArm.rotation.z = THREE.MathUtils.damp(npc.rig.leftArm.rotation.z, -0.44 * recoil, 16, dt);
+        npc.rig.rightArm.rotation.z = THREE.MathUtils.damp(npc.rig.rightArm.rotation.z, 0.44 * recoil, 16, dt);
+      } else if (npc.state === 'stunned') {
+        npc.rig.bodyGroup.rotation.x = THREE.MathUtils.damp(npc.rig.bodyGroup.rotation.x, 0.12, 10, dt);
+        npc.rig.bodyGroup.rotation.z = Math.sin(uTime * 18) * 0.1;
+        npc.rig.bodyGroup.position.y = THREE.MathUtils.damp(npc.rig.bodyGroup.position.y, -0.04, 10, dt);
+        npc.rig.leftArm.rotation.x = THREE.MathUtils.damp(npc.rig.leftArm.rotation.x, 0.24, 10, dt);
+        npc.rig.rightArm.rotation.x = THREE.MathUtils.damp(npc.rig.rightArm.rotation.x, 0.24, 10, dt);
+      } else if (npc.state === 'possessed') {
+        npc.rig.bodyGroup.rotation.x = THREE.MathUtils.damp(npc.rig.bodyGroup.rotation.x, 0.08, 10, dt);
+        npc.rig.bodyGroup.rotation.z = THREE.MathUtils.damp(npc.rig.bodyGroup.rotation.z, 0, 10, dt);
+        npc.rig.bodyGroup.position.y = THREE.MathUtils.damp(npc.rig.bodyGroup.position.y, 0, 10, dt);
+        const pSwing = npc.frameIsMoving ? Math.sin(npc.walkPhase) * 0.45 : 0;
+        npc.rig.leftLeg.rotation.x = THREE.MathUtils.damp(npc.rig.leftLeg.rotation.x, pSwing, 10, dt);
+        npc.rig.rightLeg.rotation.x = THREE.MathUtils.damp(npc.rig.rightLeg.rotation.x, -pSwing, 10, dt);
+        npc.rig.leftArm.rotation.x = THREE.MathUtils.damp(npc.rig.leftArm.rotation.x, -0.75, 8, dt);
+        npc.rig.rightArm.rotation.x = THREE.MathUtils.damp(npc.rig.rightArm.rotation.x, -0.75, 8, dt);
+        npc.rig.leftArm.rotation.z = THREE.MathUtils.damp(npc.rig.leftArm.rotation.z, 0, 8, dt);
+        npc.rig.rightArm.rotation.z = THREE.MathUtils.damp(npc.rig.rightArm.rotation.z, 0, 8, dt);
+      } else {
+        const isCombatStance = isGuardRole && (npc.state === 'alert' || npc.state === 'hunt');
+        const legSwing = npc.frameIsMoving
+          ? Math.sin(npc.walkPhase) * 0.45
+          : isCombatStance
+          ? 0.16
+          : 0;
+        npc.rig.leftLeg.rotation.x = THREE.MathUtils.damp(npc.rig.leftLeg.rotation.x, legSwing, 10, dt);
+        npc.rig.rightLeg.rotation.x = THREE.MathUtils.damp(
+          npc.rig.rightLeg.rotation.x,
+          isCombatStance && !npc.frameIsMoving ? -0.16 : -legSwing,
+          10,
+          dt,
+        );
+
+        const targetBodyX = isCombatStance
+          ? 0.14 +
+            (npc.attackWindup > 0
+              ? -0.18 * Math.min(1, npc.attackWindup / 0.52)
+              : npc.attackSwingTimer > 0
+              ? 0.24 * Math.sin((npc.attackSwingTimer / 0.24) * Math.PI)
+              : 0)
+          : npc.state === 'resting' && npc.archetype === 'beggar'
+          ? 0.28
+          : 0;
+        const targetBodyY = isCombatStance
+          ? -0.06
+          : npc.state === 'resting' && npc.archetype === 'beggar'
+          ? -0.22
+          : 0;
+        const targetBodyZ =
+          npc.attackSwingTimer > 0
+            ? -0.14 * Math.sin((npc.attackSwingTimer / 0.24) * Math.PI)
+            : isCombatStance
+            ? Math.sin(uTime * 5.5 + npc.id) * 0.03
+            : 0;
+
+        npc.rig.bodyGroup.rotation.x = THREE.MathUtils.damp(npc.rig.bodyGroup.rotation.x, targetBodyX, 12, dt);
+        npc.rig.bodyGroup.rotation.z = THREE.MathUtils.damp(npc.rig.bodyGroup.rotation.z, targetBodyZ, 12, dt);
+        npc.rig.bodyGroup.position.y = THREE.MathUtils.damp(npc.rig.bodyGroup.position.y, targetBodyY, 12, dt);
+
+        if (npc.archetype === 'cultist' && (npc.state === 'resting' || npc.state === 'alert')) {
+          const chantAngle = npc.state === 'alert' ? -2.1 : -1.85;
+          npc.rig.leftArm.rotation.x = THREE.MathUtils.damp(npc.rig.leftArm.rotation.x, chantAngle, 10, dt);
+          npc.rig.rightArm.rotation.x = THREE.MathUtils.damp(npc.rig.rightArm.rotation.x, chantAngle, 10, dt);
+          npc.rig.leftArm.rotation.z = THREE.MathUtils.damp(npc.rig.leftArm.rotation.z, -0.15, 10, dt);
+          npc.rig.rightArm.rotation.z = THREE.MathUtils.damp(npc.rig.rightArm.rotation.z, 0.15, 10, dt);
+        } else if (npc.archetype === 'beggar' && npc.state === 'resting') {
+          npc.rig.leftArm.rotation.x = THREE.MathUtils.damp(npc.rig.leftArm.rotation.x, -0.55, 10, dt);
+          npc.rig.rightArm.rotation.x = THREE.MathUtils.damp(npc.rig.rightArm.rotation.x, -0.55, 10, dt);
+          npc.rig.leftArm.rotation.z = THREE.MathUtils.damp(npc.rig.leftArm.rotation.z, 0, 10, dt);
+          npc.rig.rightArm.rotation.z = THREE.MathUtils.damp(npc.rig.rightArm.rotation.z, 0, 10, dt);
+        } else if (isCombatStance) {
+          if (npc.attackWindup > 0) {
+            const wProg = Math.min(1, npc.attackWindup / 0.52);
+            npc.rig.rightArm.rotation.x = THREE.MathUtils.damp(npc.rig.rightArm.rotation.x, -1.65 * wProg, 16, dt);
+            npc.rig.rightArm.rotation.z = THREE.MathUtils.damp(npc.rig.rightArm.rotation.z, -0.18, 12, dt);
+            npc.rig.leftArm.rotation.x = THREE.MathUtils.damp(npc.rig.leftArm.rotation.x, -1.02, 12, dt);
+            npc.rig.leftArm.rotation.z = THREE.MathUtils.damp(npc.rig.leftArm.rotation.z, 0.16, 12, dt);
+          } else if (npc.attackSwingTimer > 0) {
+            const sProg = 1 - npc.attackSwingTimer / 0.24;
+            npc.rig.rightArm.rotation.x = THREE.MathUtils.damp(
+              npc.rig.rightArm.rotation.x,
+              -1.35 + sProg * 2.05,
+              22,
+              dt,
+            );
+            npc.rig.rightArm.rotation.z = THREE.MathUtils.damp(npc.rig.rightArm.rotation.z, 0.15, 18, dt);
+            npc.rig.leftArm.rotation.x = THREE.MathUtils.damp(npc.rig.leftArm.rotation.x, -0.68, 12, dt);
+            npc.rig.leftArm.rotation.z = THREE.MathUtils.damp(npc.rig.leftArm.rotation.z, 0.14, 12, dt);
+          } else {
+            // Armed combat guard posture (leveled crossbow for hunters, braced halberd/mace for guards)
+            const guardRightX =
+              npc.archetype === 'hunter' ? -1.32 : -0.92 + Math.sin(npc.walkPhase) * 0.14;
+            npc.rig.rightArm.rotation.x = THREE.MathUtils.damp(npc.rig.rightArm.rotation.x, guardRightX, 11, dt);
+            npc.rig.rightArm.rotation.z = THREE.MathUtils.damp(npc.rig.rightArm.rotation.z, -0.2, 10, dt);
+            npc.rig.leftArm.rotation.x = THREE.MathUtils.damp(npc.rig.leftArm.rotation.x, -0.88, 10, dt);
+            npc.rig.leftArm.rotation.z = THREE.MathUtils.damp(npc.rig.leftArm.rotation.z, 0.16, 10, dt);
+          }
+          if (npc.rig.lanternMat) {
+            npc.rig.lanternMat.color.setHex(0xffe08a);
+          }
+        } else {
+          const isInvestigatingWithLantern =
+            isGuardRole && (npc.state === 'curious' || npc.state === 'suspicious');
+          const targetLeftArm = isInvestigatingWithLantern
+            ? -1.05
+            : npc.archetype === 'cultist'
+            ? -0.78
+            : legSwing * 0.4;
+          npc.rig.leftArm.rotation.x = THREE.MathUtils.damp(npc.rig.leftArm.rotation.x, targetLeftArm, 8, dt);
+          npc.rig.rightArm.rotation.x = THREE.MathUtils.damp(npc.rig.rightArm.rotation.x, -legSwing * 0.4, 8, dt);
+          npc.rig.leftArm.rotation.z = THREE.MathUtils.damp(npc.rig.leftArm.rotation.z, 0, 8, dt);
+          npc.rig.rightArm.rotation.z = THREE.MathUtils.damp(npc.rig.rightArm.rotation.z, 0, 8, dt);
+          if (npc.rig.lanternMat && npc.archetype !== 'cultist') {
+            npc.rig.lanternMat.color.setHex(isInvestigatingWithLantern ? 0xffe08a : 0xffaa44);
+          }
         }
       }
 
-      if (npc.rig.visionConeMat && showVisionCones) {
-        if (npc.state === 'hunt' || npc.state === 'alert') {
+      if (npc.rig.visionCone && npc.rig.visionConeMat && npc.rig.visionCone.visible) {
+        const horizDist = Math.hypot(this.playerPos.x - npc.position.x, this.playerPos.z - npc.position.z);
+        const proxAlpha = horizDist <= 14.5 ? THREE.MathUtils.clamp((14.5 - horizDist) / 4.0, 0, 1) : 0;
+        const stealthAlpha =
+          isPlayerStealth && horizDist <= 24.0
+            ? THREE.MathUtils.clamp((24.0 - horizDist) / 5.0, 0, 1) * 0.85
+            : 0;
+        const senseAlpha = senseVal > 0.08 && horizDist <= auspRange ? senseVal : 0;
+        const visFactor = Math.max(senseAlpha, proxAlpha, stealthAlpha);
+
+        if (visFactor <= 0.01) {
+          npc.rig.visionCone.visible = false;
+        } else if (npc.state === 'hunt' || npc.state === 'alert' || npc.state === 'flee') {
           npc.rig.visionConeMat.color.setHex(0xef4444);
-          npc.rig.visionConeMat.opacity = 0.42 * senseVal;
+          npc.rig.visionConeMat.opacity = (senseAlpha > 0 ? 0.38 : 0.24) * visFactor;
         } else if (npc.state === 'suspicious' || npc.state === 'curious') {
           npc.rig.visionConeMat.color.setHex(0xfacc15);
-          npc.rig.visionConeMat.opacity = 0.32 * senseVal;
+          npc.rig.visionConeMat.opacity = (senseAlpha > 0 ? 0.3 : 0.19) * visFactor;
         } else {
           npc.rig.visionConeMat.color.setHex(0x60a5fa);
-          npc.rig.visionConeMat.opacity = 0.24 * senseVal;
+          npc.rig.visionConeMat.opacity = (senseAlpha > 0 ? 0.22 : 0.14) * visFactor;
         }
       }
 
@@ -5363,7 +6326,15 @@ export class VampireGameEngine {
   }
 
   private updateCamera(dt: number): void {
+    const crouchActive =
+      this.isCrouching || this.heldKeys.has('ShiftLeft') || this.heldKeys.has('ShiftRight');
+
     if (this.astralActive) {
+      this.fpArms.root.visible = false;
+      this.vampire.bodyPivot.visible = this.batFormTimer <= 0;
+      this.vampire.contactShadow.visible = true;
+      this.camera.rotation.order = 'XYZ';
+
       const sinY = Math.sin(this.astralYaw);
       const cosY = Math.cos(this.astralYaw);
       const cosP = Math.cos(this.astralPitch);
@@ -5385,27 +6356,55 @@ export class VampireGameEngine {
       return;
     }
 
+    // Hide full player mesh & show styled first-person hands/claws (except in Bat Form)
+    this.vampire.bodyPivot.visible = false;
+    this.vampire.contactShadow.visible = false;
+    this.fpArms.root.visible = this.batFormTimer <= 0;
+
+    // Smooth vertical transitions across stairs, sidewalk curbs & platforms without hiding jumps
+    const floorFollowRate = this.isGrounded ? 17 : 28;
+    this.camSmoothFloorY = THREE.MathUtils.damp(this.camSmoothFloorY, this.playerPos.y, floorFollowRate, dt);
+
+    // Smooth crouch & landing eye height interpolation
+    const landDip =
+      this.jumpLandAnimTimer > 0 ? Math.sin((this.jumpLandAnimTimer / 0.18) * Math.PI) * 0.14 : 0;
     const isFeedingNow = this.feedTimer > 0;
     this.feedCamBlend = THREE.MathUtils.damp(
       this.feedCamBlend,
       isFeedingNow ? 1.0 : 0.0,
-      isFeedingNow ? 7.5 : 5.5,
+      isFeedingNow ? 9.0 : 6.0,
       dt,
     );
-    const zoomDist = THREE.MathUtils.lerp(this.camDist, 3.55, this.feedCamBlend);
-    const effectiveYaw = this.camYaw + this.feedCamBlend * 0.24;
-    const sinY = Math.sin(effectiveYaw);
-    const cosY = Math.cos(effectiveYaw);
-    const cosP = Math.cos(this.camPitch);
-    const sinP = Math.sin(this.camPitch);
+    const feedEyeDip =
+      this.feedTakedownKind === 'aerial' ? 0.18 * this.feedCamBlend : 0.05 * this.feedCamBlend;
+    const targetEye = (crouchActive && !isFeedingNow ? 1.04 : 1.66) - landDip - feedEyeDip;
+    this.camEyeHeight = THREE.MathUtils.damp(this.camEyeHeight, targetEye, 12, dt);
+
+    // Subtle footstep head-bob & horizontal strafe lean
+    const isMovingOnGround =
+      this.isGrounded && this.lastHorizSpeed > 0.45 && !isFeedingNow && this.dashTimer <= 0;
+    const speedNorm = isMovingOnGround ? THREE.MathUtils.clamp(this.lastHorizSpeed / 6.4, 0, 1.35) : 0;
+    const bobAmp = (crouchActive ? 0.022 : 0.036) * speedNorm;
+    const targetBobY = isMovingOnGround ? -Math.cos(this.walkCycle * 2) * bobAmp * 0.65 : 0;
+    const targetBobX = isMovingOnGround ? Math.sin(this.walkCycle) * bobAmp * 0.48 : 0;
+    this.camBobY = THREE.MathUtils.damp(this.camBobY, targetBobY, 16, dt);
+    this.camBobX = THREE.MathUtils.damp(this.camBobX, targetBobX, 16, dt);
+
+    const strafeInput =
+      !isFeedingNow && this.phase === 'playing'
+        ? (this.heldKeys.has('KeyD') ? 1 : 0) - (this.heldKeys.has('KeyA') ? 1 : 0)
+        : 0;
+    const targetRoll = -strafeInput * 0.016;
+    this.camRoll = THREE.MathUtils.damp(this.camRoll, targetRoll, 11, dt);
+
+    const camRightX = Math.cos(this.camYaw);
+    const camRightZ = -Math.sin(this.camYaw);
 
     _camDesired.set(
-      this.playerPos.x + sinY * cosP * zoomDist,
-      this.playerPos.y + 1.55 + sinP * zoomDist,
-      this.playerPos.z + cosY * cosP * zoomDist,
+      this.playerPos.x + camRightX * this.camBobX,
+      this.camSmoothFloorY + this.camEyeHeight + this.camBobY,
+      this.playerPos.z + camRightZ * this.camBobX,
     );
-
-    _camDesired.y = Math.max(this.playerPos.y + 0.8, _camDesired.y);
 
     if (this.shakeIntensity > 0.002) {
       _camDesired.x += (Math.random() - 0.5) * this.shakeIntensity;
@@ -5413,14 +6412,181 @@ export class VampireGameEngine {
       this.shakeIntensity = THREE.MathUtils.damp(this.shakeIntensity, 0, 10, dt);
     }
 
-    this.camera.position.x = THREE.MathUtils.damp(this.camera.position.x, _camDesired.x, 14, dt);
-    this.camera.position.y = THREE.MathUtils.damp(this.camera.position.y, _camDesired.y, 14, dt);
-    this.camera.position.z = THREE.MathUtils.damp(this.camera.position.z, _camDesired.z, 14, dt);
+    this.camera.position.copy(_camDesired);
+    this.camera.rotation.order = 'YXZ';
+    this.camera.rotation.y = this.camYaw;
+    const feedPulse = isFeedingNow
+      ? Math.sin(this.sharedUniforms.uTime.value * 16) * 0.012 * this.feedCamBlend
+      : 0;
+    this.camera.rotation.x = -this.camPitch + feedPulse;
+    this.camera.rotation.z = this.camRoll;
 
-    const baseLookY = this.playerPos.y + (this.isCrouching ? 1.15 : 1.48);
-    const lookY = THREE.MathUtils.lerp(baseLookY, this.playerPos.y + 1.36, this.feedCamBlend);
-    _camLook.set(this.playerPos.x, lookY, this.playerPos.z);
-    this.camera.lookAt(_camLook);
+    this.updateFirstPersonArms(dt, crouchActive);
+  }
+
+  private updateFirstPersonArms(dt: number, crouchActive: boolean): void {
+    const isObfActive = this.obfuscateTimer > 0;
+    const isMistActive = this.mistFormTimer > 0;
+    const isShroudActive = this.abyssalShroudTimer > 0;
+    const isVisageActive = this.falseVisageTimer > 0;
+    const desiredOpacity = isMistActive
+      ? 0.28
+      : isObfActive
+      ? 0.36
+      : this.shadowVeilTimer > 0
+      ? 0.45
+      : 1.0;
+
+    for (const def of this.fpArms.stealthMatDefaults) {
+      if (isMistActive) {
+        def.mat.color.lerp(_color.setHex(0xcbd5e1), Math.min(1, dt * 9));
+        def.mat.emissive.lerp(_color2.setHex(0x475569), Math.min(1, dt * 9));
+        def.mat.emissiveIntensity = THREE.MathUtils.damp(def.mat.emissiveIntensity, 0.32, 9, dt);
+      } else if (isObfActive) {
+        def.mat.color.lerp(_color.setHex(0x38bdf8), Math.min(1, dt * 8));
+        def.mat.emissive.lerp(_color2.setHex(0x1d4ed8), Math.min(1, dt * 8));
+        def.mat.emissiveIntensity = THREE.MathUtils.damp(def.mat.emissiveIntensity, 0.42, 8, dt);
+      } else if (isShroudActive) {
+        def.mat.color.lerp(_color.setHex(0x111322), Math.min(1, dt * 8));
+        def.mat.emissive.lerp(_color2.setHex(0x312e81), Math.min(1, dt * 8));
+        def.mat.emissiveIntensity = THREE.MathUtils.damp(def.mat.emissiveIntensity, 0.36, 8, dt);
+      } else if (isVisageActive) {
+        def.mat.color.lerp(_color.setHex(def.baseColor), Math.min(1, dt * 10));
+        def.mat.emissive.lerp(_color2.setHex(0x78350f), Math.min(1, dt * 8));
+        def.mat.emissiveIntensity = THREE.MathUtils.damp(def.mat.emissiveIntensity, 0.22, 8, dt);
+      } else {
+        def.mat.color.lerp(_color.setHex(def.baseColor), Math.min(1, dt * 10));
+        def.mat.emissive.lerp(_color2.setHex(0x000000), Math.min(1, dt * 10));
+        def.mat.emissiveIntensity = THREE.MathUtils.damp(def.mat.emissiveIntensity, 0, 10, dt);
+      }
+      def.mat.opacity = THREE.MathUtils.damp(def.mat.opacity, desiredOpacity, 10, dt);
+    }
+
+    const t = this.sharedUniforms.uTime.value;
+    const breath = Math.sin(t * 2.1) * 0.005;
+    const moveNorm =
+      this.isGrounded && this.feedTimer <= 0 && this.dashTimer <= 0
+        ? THREE.MathUtils.clamp(this.lastHorizSpeed / 6.4, 0, 1.35)
+        : 0;
+    const walkX = Math.sin(this.walkCycle) * 0.015 * moveNorm;
+    const walkY = -Math.abs(Math.cos(this.walkCycle)) * 0.014 * moveNorm;
+    const walkZ = Math.cos(this.walkCycle) * 0.01 * moveNorm;
+    const crouchY = crouchActive && this.isGrounded ? -0.022 : 0;
+    const crouchZ = crouchActive && this.isGrounded ? -0.024 : 0;
+
+    let targetLX = -0.235 - walkX;
+    let targetLY = -0.225 + breath + walkY + crouchY;
+    let targetLZ = -0.175 + walkZ + crouchZ;
+    let targetLRX = 0.08 + (crouchActive ? 0.08 : 0);
+    let targetLRY = 0.22;
+    let targetLRZ = -0.14;
+
+    let targetRX = 0.235 - walkX;
+    let targetRY = -0.225 - breath + walkY + crouchY;
+    let targetRZ = -0.175 - walkZ + crouchZ;
+    let targetRRX = 0.08 + (crouchActive ? 0.08 : 0);
+    let targetRRY = -0.22;
+    let targetRRZ = 0.14;
+
+    if (!this.isGrounded) {
+      const airOffset = THREE.MathUtils.clamp(this.playerVelY * 0.004, -0.035, 0.035);
+      targetLY -= airOffset;
+      targetRY -= airOffset;
+      targetLRX += this.playerVelY < 0 ? 0.14 : -0.12;
+      targetRRX += this.playerVelY < 0 ? 0.14 : -0.12;
+      targetLX -= 0.025;
+      targetRX += 0.025;
+    } else if (this.dashTimer > 0) {
+      targetLZ += 0.04;
+      targetRZ += 0.04;
+      targetLRX = -0.18;
+      targetRRX = -0.18;
+    }
+
+    if (this.castAnimTimer > 0) {
+      const castRatio = Math.sin(Math.min(1, this.castAnimTimer / 0.26) * Math.PI);
+      targetLY += 0.065 * castRatio;
+      targetRY += 0.065 * castRatio;
+      targetLZ -= 0.075 * castRatio;
+      targetRZ -= 0.075 * castRatio;
+      targetLRX += 0.36 * castRatio;
+      targetRRX += 0.36 * castRatio;
+      targetLRY += 0.18 * castRatio;
+      targetRRY -= 0.18 * castRatio;
+    }
+
+    if (this.feedTimer > 0) {
+      const tremble = Math.sin(t * 24) * 0.006;
+      targetLX = -0.165 + tremble;
+      targetRX = 0.165 - tremble;
+      targetLY = -0.175;
+      targetRY = -0.175;
+      targetLZ = -0.295;
+      targetRZ = -0.295;
+      targetLRX = 0.28;
+      targetRRX = 0.28;
+      targetLRY = -0.26;
+      targetRRY = 0.26;
+      targetLRZ = -0.34;
+      targetRRZ = 0.34;
+    }
+
+    if (this.clawSlashTimer > 0) {
+      const slashProg = 1 - this.clawSlashTimer / Math.max(0.05, this.clawSlashDuration);
+      const arc = Math.min(1, slashProg * 1.38);
+      const ease = 1 - Math.pow(1 - arc, 3);
+      const step = this.clawActiveComboStep;
+
+      if (step === 0) {
+        // Right diagonal cross-slash
+        targetRX = 0.28 - ease * 0.42;
+        targetRY = -0.11 - ease * 0.15;
+        targetRZ = -0.14 - Math.sin(ease * Math.PI) * 0.2;
+        targetRRX = 0.35 - ease * 0.55;
+        targetRRY = -0.35 + ease * 0.95;
+        targetRRZ = -0.25 + ease * 0.98;
+        targetLX = -0.27;
+        targetLZ = -0.13;
+      } else if (step === 1) {
+        // Left diagonal cross-slash
+        targetLX = -0.28 + ease * 0.42;
+        targetLY = -0.11 - ease * 0.15;
+        targetLZ = -0.14 - Math.sin(ease * Math.PI) * 0.2;
+        targetLRX = 0.35 - ease * 0.55;
+        targetLRY = 0.35 - ease * 0.95;
+        targetLRZ = 0.25 - ease * 0.98;
+        targetRX = 0.27;
+        targetRZ = -0.13;
+      } else {
+        // Double-claw forward lunge
+        const thrust = Math.sin(ease * Math.PI * 0.85);
+        targetLX = -0.25 + ease * 0.13;
+        targetRX = 0.25 - ease * 0.13;
+        targetLY = -0.15 - ease * 0.06;
+        targetRY = -0.15 - ease * 0.06;
+        targetLZ = -0.13 - thrust * 0.24;
+        targetRZ = -0.13 - thrust * 0.24;
+        targetLRX = 0.42 - ease * 0.5;
+        targetRRX = 0.42 - ease * 0.5;
+        targetLRZ = -0.45 + ease * 0.25;
+        targetRRZ = 0.45 - ease * 0.25;
+      }
+    }
+
+    const snapRate = this.clawSlashTimer > 0 ? 28 : 14;
+    this.fpArms.leftArm.position.x = THREE.MathUtils.damp(this.fpArms.leftArm.position.x, targetLX, snapRate, dt);
+    this.fpArms.leftArm.position.y = THREE.MathUtils.damp(this.fpArms.leftArm.position.y, targetLY, snapRate, dt);
+    this.fpArms.leftArm.position.z = THREE.MathUtils.damp(this.fpArms.leftArm.position.z, targetLZ, snapRate, dt);
+    this.fpArms.leftArm.rotation.x = THREE.MathUtils.damp(this.fpArms.leftArm.rotation.x, targetLRX, snapRate, dt);
+    this.fpArms.leftArm.rotation.y = THREE.MathUtils.damp(this.fpArms.leftArm.rotation.y, targetLRY, snapRate, dt);
+    this.fpArms.leftArm.rotation.z = THREE.MathUtils.damp(this.fpArms.leftArm.rotation.z, targetLRZ, snapRate, dt);
+
+    this.fpArms.rightArm.position.x = THREE.MathUtils.damp(this.fpArms.rightArm.position.x, targetRX, snapRate, dt);
+    this.fpArms.rightArm.position.y = THREE.MathUtils.damp(this.fpArms.rightArm.position.y, targetRY, snapRate, dt);
+    this.fpArms.rightArm.position.z = THREE.MathUtils.damp(this.fpArms.rightArm.position.z, targetRZ, snapRate, dt);
+    this.fpArms.rightArm.rotation.x = THREE.MathUtils.damp(this.fpArms.rightArm.rotation.x, targetRRX, snapRate, dt);
+    this.fpArms.rightArm.rotation.y = THREE.MathUtils.damp(this.fpArms.rightArm.rotation.y, targetRRY, snapRate, dt);
+    this.fpArms.rightArm.rotation.z = THREE.MathUtils.damp(this.fpArms.rightArm.rotation.z, targetRRZ, snapRate, dt);
   }
 
   private updateParticles(dt: number): void {
@@ -5491,30 +6657,47 @@ export class VampireGameEngine {
 
   private updateSmoke(dt: number): void {
     this.smokeSpawnTimer += dt;
-    if (this.smokeSpawnTimer >= 0.22 && this.world.smokeSources.length > 0) {
+    if (this.smokeSpawnTimer >= 0.16 && this.world.smokeSources.length > 0) {
       this.smokeSpawnTimer = 0;
-      const src = this.world.smokeSources[Math.floor(Math.random() * this.world.smokeSources.length)];
-      for (let i = 0; i < this.smokePuffs.length; i++) {
-        const puff = this.smokePuffs[i];
-        if (!puff.active) {
-          puff.active = true;
-          puff.isDark = false;
-          puff.pos.set(
-            src.x + (Math.random() - 0.5) * 0.28,
-            src.y,
-            src.z + (Math.random() - 0.5) * 0.28,
-          );
-          puff.vel.set(
-            (Math.random() - 0.5) * 0.3,
-            1.15 + Math.random() * 0.55,
-            (Math.random() - 0.5) * 0.3,
-          );
-          puff.life = 0;
-          puff.maxLife = 3.2 + Math.random() * 1.4;
-          puff.baseScale = 0.6 + Math.random() * 0.45;
-          this.smokeMesh.setColorAt(i, _color.setHex(0x64748b));
-          if (this.smokeMesh.instanceColor) this.smokeMesh.instanceColor.needsUpdate = true;
-          break;
+      this.nearbySmokeIndices.length = 0;
+      const maxDistSq = 48 * 48;
+      for (let s = 0; s < this.world.smokeSources.length; s++) {
+        const cand = this.world.smokeSources[s];
+        const dx = cand.x - this.playerPos.x;
+        const dz = cand.z - this.playerPos.z;
+        if (dx * dx + dz * dz <= maxDistSq) {
+          this.nearbySmokeIndices.push(s);
+        }
+      }
+
+      if (this.nearbySmokeIndices.length > 0) {
+        const pickedIdx =
+          this.nearbySmokeIndices[Math.floor(Math.random() * this.nearbySmokeIndices.length)];
+        const src = this.world.smokeSources[pickedIdx];
+        const isGrate = src.y < 1.0;
+
+        for (let i = 0; i < this.smokePuffs.length; i++) {
+          const puff = this.smokePuffs[i];
+          if (!puff.active) {
+            puff.active = true;
+            puff.isDark = false;
+            puff.pos.set(
+              src.x + (Math.random() - 0.5) * (isGrate ? 0.55 : 0.28),
+              src.y,
+              src.z + (Math.random() - 0.5) * (isGrate ? 0.55 : 0.28),
+            );
+            puff.vel.set(
+              (Math.random() - 0.5) * 0.28,
+              (isGrate ? 0.68 : 1.15) + Math.random() * 0.45,
+              (Math.random() - 0.5) * 0.28,
+            );
+            puff.life = 0;
+            puff.maxLife = (isGrate ? 2.5 : 3.2) + Math.random() * 1.2;
+            puff.baseScale = (isGrate ? 0.42 : 0.72) + Math.random() * (isGrate ? 0.28 : 0.44);
+            this.smokeMesh.setColorAt(i, _color.setHex(isGrate ? 0x8fa3ba : 0x64748b));
+            if (this.smokeMesh.instanceColor) this.smokeMesh.instanceColor.needsUpdate = true;
+            break;
+          }
         }
       }
     }
@@ -5554,6 +6737,138 @@ export class VampireGameEngine {
     }
   }
 
+  private updateAmbientMotes(dt: number): void {
+    this.ambientMoteSpawnTimer += dt;
+    let colorDirty = false;
+
+    if (this.ambientMoteSpawnTimer >= 0.085) {
+      this.ambientMoteSpawnTimer = 0;
+      this.nearbyLampIndices.length = 0;
+      const maxLampDistSq = 38 * 38;
+      for (let i = 0; i < this.world.lamps.length; i++) {
+        const lamp = this.world.lamps[i];
+        if (!lamp.isLit) continue;
+        const dx = lamp.position.x - this.playerPos.x;
+        const dz = lamp.position.z - this.playerPos.z;
+        if (dx * dx + dz * dz <= maxLampDistSq) {
+          this.nearbyLampIndices.push(i);
+        }
+      }
+
+      const cryptDx = 22.0 - this.playerPos.x;
+      const cryptDz = -32.4 - this.playerPos.z;
+      const nearBraziers = cryptDx * cryptDx + cryptDz * cryptDz <= 30 * 30;
+      const roll = Math.random();
+
+      for (let i = 0; i < this.ambientMotes.length; i++) {
+        const m = this.ambientMotes[i];
+        if (m.active) continue;
+
+        if (nearBraziers && roll < 0.16) {
+          const side = Math.random() < 0.5 ? -2.6 : 2.6;
+          m.active = true;
+          m.pos.set(
+            22.0 + side + (Math.random() - 0.5) * 0.25,
+            1.42 + Math.random() * 0.18,
+            -32.4 + (Math.random() - 0.5) * 0.25,
+          );
+          m.vel.set((Math.random() - 0.5) * 0.24, 0.45 + Math.random() * 0.35, (Math.random() - 0.5) * 0.24);
+          m.life = 0;
+          m.maxLife = 1.2 + Math.random() * 0.8;
+          m.baseScale = 0.75 + Math.random() * 0.4;
+          this.ambientMoteMesh.setColorAt(i, _color.setHex(0xf87171));
+          colorDirty = true;
+          break;
+        } else if (this.nearbyLampIndices.length > 0 && roll < 0.72) {
+          const lamp =
+            this.world.lamps[this.nearbyLampIndices[Math.floor(Math.random() * this.nearbyLampIndices.length)]];
+          const angle = Math.random() * Math.PI * 2;
+          const rad = 0.15 + Math.random() * 0.45;
+          m.active = true;
+          m.pos.set(
+            lamp.position.x + Math.cos(angle) * rad,
+            4.48 + Math.random() * 0.35,
+            lamp.position.z + Math.sin(angle) * rad,
+          );
+          m.vel.set(
+            (Math.random() - 0.5) * 0.22,
+            0.22 + Math.random() * 0.26,
+            (Math.random() - 0.5) * 0.22,
+          );
+          m.life = 0;
+          m.maxLife = 1.4 + Math.random() * 0.9;
+          m.baseScale = 0.55 + Math.random() * 0.45;
+          this.ambientMoteMesh.setColorAt(
+            i,
+            _color.setHex(Math.random() < 0.55 ? 0xffb347 : 0xffd280),
+          );
+          colorDirty = true;
+          break;
+        } else if (this.nearbySmokeIndices.length > 0) {
+          const src =
+            this.world.smokeSources[
+              this.nearbySmokeIndices[Math.floor(Math.random() * this.nearbySmokeIndices.length)]
+            ];
+          m.active = true;
+          m.pos.set(
+            src.x + (Math.random() - 0.5) * 0.65,
+            src.y + Math.random() * 0.35,
+            src.z + (Math.random() - 0.5) * 0.65,
+          );
+          m.vel.set(
+            (Math.random() - 0.5) * 0.28,
+            0.42 + Math.random() * 0.32,
+            (Math.random() - 0.5) * 0.28,
+          );
+          m.life = 0;
+          m.maxLife = 1.6 + Math.random() * 1.0;
+          m.baseScale = 0.5 + Math.random() * 0.4;
+          this.ambientMoteMesh.setColorAt(i, _color.setHex(0x94a3b8));
+          colorDirty = true;
+          break;
+        }
+        break;
+      }
+    }
+
+    const wx = this.sharedUniforms.uWindDir.value.x * this.windStrength * 0.55;
+    const wz = this.sharedUniforms.uWindDir.value.y * this.windStrength * 0.55;
+    let matrixDirty = false;
+
+    for (let i = 0; i < this.ambientMotes.length; i++) {
+      const m = this.ambientMotes[i];
+      if (!m.active) continue;
+      matrixDirty = true;
+      m.life += dt;
+      if (m.life >= m.maxLife) {
+        m.active = false;
+        _dummy.position.set(0, -100, 0);
+        _dummy.scale.setScalar(0.001);
+        _dummy.updateMatrix();
+        this.ambientMoteMesh.setMatrixAt(i, _dummy.matrix);
+        continue;
+      }
+      const prog = m.life / m.maxLife;
+      m.pos.x += (m.vel.x + wx * prog + Math.sin(m.life * 3.8 + i) * 0.14) * dt;
+      m.pos.y += m.vel.y * dt;
+      m.pos.z += (m.vel.z + wz * prog + Math.cos(m.life * 3.4 + i) * 0.14) * dt;
+
+      const scale = m.baseScale * Math.sin(prog * Math.PI);
+      _dummy.position.copy(m.pos);
+      _dummy.scale.setScalar(Math.max(0.01, scale));
+      _dummy.rotation.set(m.life * 2.1, m.life * 1.7, 0);
+      _dummy.updateMatrix();
+      this.ambientMoteMesh.setMatrixAt(i, _dummy.matrix);
+    }
+
+    if (matrixDirty) {
+      this.ambientMoteMesh.instanceMatrix.needsUpdate = true;
+    }
+    if (colorDirty && this.ambientMoteMesh.instanceColor) {
+      this.ambientMoteMesh.instanceColor.needsUpdate = true;
+    }
+  }
+
   private findNearbyMemoryFragment(): MemoryFragmentInstance | null {
     for (const mem of this.world.memories) {
       if (mem.collected) continue;
@@ -5577,11 +6892,14 @@ export class VampireGameEngine {
 
     const candidate = this.findFeedCandidate();
     if (candidate) {
+      const hasCornice = this.hasSkill('rap_3b') || this.hasSkill('amal_nocturnal_stalker');
       return {
         type: 'feed',
         keyHint: 'F',
         label: candidate.isAerial
-          ? `Bote Aéreo Letal: ${candidate.npc.name}`
+          ? hasCornice
+            ? `Bote das Cornijas: ${candidate.npc.name}`
+            : `Bote Aéreo Letal: ${candidate.npc.name}`
           : candidate.npc.hp <= 25 &&
             (candidate.npc.archetype === 'guard' ||
               candidate.npc.archetype === 'bodyguard' ||
@@ -5600,13 +6918,15 @@ export class VampireGameEngine {
       Math.hypot(this.playerPos.x - this.world.coffinPos.x, this.playerPos.z - this.world.coffinPos.z) <= 3.3 &&
       Math.abs(this.playerPos.y - this.world.coffinPos.y) <= 2.2;
     if (nearCoffin) {
+      const quotaBonus = this.killsThisNight >= this.quotaThisNight ? 20 : 0;
+      const totalToConsolidate = this.pendingEssence + quotaBonus;
       return {
         type: 'restCoffin',
         keyHint: 'E',
         label:
-          this.killsThisNight >= this.quotaThisNight
-            ? 'Repousar no Caixão e Concluir Noite'
-            : `Caixão (Faltam ${this.quotaThisNight - this.killsThisNight} pts de domínio)`,
+          quotaBonus > 0
+            ? `Repousar no Caixão e Consolidar +${totalToConsolidate} Essência (+20 bônus)`
+            : `Repousar no Caixão e Consolidar +${totalToConsolidate} Essência`,
       };
     }
 
@@ -5716,6 +7036,28 @@ export class VampireGameEngine {
     const clockMins = Math.round(nightProgress * 300);
     const nightClockText = `${String(Math.floor(clockMins / 60)).padStart(2, '0')}:${String(clockMins % 60).padStart(2, '0')}`;
     const inSanctuary = this.isNearSafeSanctuary(this.playerPos);
+    const inSafeCemetery = this.isInSafeCemetery(this.playerPos);
+    const targetCryptX = this.world.coffinPos.x;
+    const targetCryptZ = inSanctuary ? this.world.coffinPos.z : -33.6;
+    const cryptDx = targetCryptX - this.playerPos.x;
+    const cryptDz = targetCryptZ - this.playerPos.z;
+    const cryptDistance = Math.round(Math.hypot(cryptDx, cryptDz));
+    const camFwdX = -Math.sin(this.camYaw);
+    const camFwdZ = -Math.cos(this.camYaw);
+    const camRightX = Math.cos(this.camYaw);
+    const camRightZ = -Math.sin(this.camYaw);
+    const cryptBearingDeg = Math.round(
+      THREE.MathUtils.radToDeg(
+        Math.atan2(cryptDx * camRightX + cryptDz * camRightZ, cryptDx * camFwdX + cryptDz * camFwdZ),
+      ),
+    );
+    const nearCoffinNow =
+      inSanctuary &&
+      Math.hypot(this.playerPos.x - this.world.coffinPos.x, this.playerPos.z - this.world.coffinPos.z) <= 3.3;
+    const showCryptCompass =
+      !nearCoffinNow &&
+      (nightProgress >= 0.72 ||
+        this.killsThisNight >= this.quotaThisNight);
 
     this.callbacks.onHudUpdate({
       health: Math.max(0, Math.round(this.health)),
@@ -5723,6 +7065,7 @@ export class VampireGameEngine {
       blood: Math.max(0, Math.round(this.blood)),
       maxBlood: this.maxBlood,
       essence: this.essence,
+      pendingEssence: this.pendingEssence,
       exposure: Math.round(this.exposure),
       shadowImmersion: Math.round(this.shadowImmersion * 100) / 100,
       noiseLevel: Math.round(this.noiseLevel),
@@ -5742,6 +7085,7 @@ export class VampireGameEngine {
       currentDistrictInfamy: roundedInfamy[currentDistrict],
       districtInfamy: roundedInfamy,
       isInSafeSanctuary: inSanctuary,
+      isInSafeCemetery: inSafeCemetery,
       isCrouching: this.isCrouching || this.heldKeys.has('ShiftLeft') || this.heldKeys.has('ShiftRight'),
       isInShadow: this.exposure < 32,
       isCrimsonSense: this.isCrimsonSense,
@@ -5751,6 +7095,7 @@ export class VampireGameEngine {
       isFalseVisage: this.falseVisageTimer > 0,
       isAstralScout: this.astralActive,
       isAbyssalShroud: this.abyssalShroudTimer > 0,
+      isShadowDecoyActive: this.shadowDecoyTimer > 0,
       powerRegenRemaining: Math.ceil(this.powerRegenTimer),
       isFeeding: isFeedActive,
       feedProgress,
@@ -5765,6 +7110,10 @@ export class VampireGameEngine {
       isDawnApproaching: nightProgress >= 0.85 && nightProgress < 1.0,
       isDawnBurn: nightProgress >= 1.0 && !inSanctuary,
       canCompleteNight: this.killsThisNight >= this.quotaThisNight,
+      cryptDistance,
+      cryptBearingDeg,
+      showCryptCompass,
+      lastNightSummary: this.lastNightSummary,
       mainTargetName: this.mainTargetName,
       mainTargetDistrict: this.mainTargetDistrict,
       mainTargetDefeated: this.mainTargetDefeated,
@@ -5782,10 +7131,14 @@ export class VampireGameEngine {
         shadowSnareMax: this.getSkillCooldownMax('shadowSnare'),
         abyssalShroud: this.cooldowns.abyssalShroud,
         abyssalShroudMax: this.getSkillCooldownMax('abyssalShroud'),
+        darknessPulse: this.cooldowns.darknessPulse,
+        darknessPulseMax: this.getSkillCooldownMax('darknessPulse'),
         obfuscate: this.cooldowns.obfuscate,
         obfuscateMax: this.getSkillCooldownMax('obfuscate'),
         falseVisage: this.cooldowns.falseVisage,
         falseVisageMax: this.getSkillCooldownMax('falseVisage'),
+        shadowDecoy: this.cooldowns.shadowDecoy,
+        shadowDecoyMax: this.getSkillCooldownMax('shadowDecoy'),
         astralScout: this.cooldowns.astralScout,
         astralScoutMax: this.getSkillCooldownMax('astralScout'),
         dominate: this.cooldowns.dominate,
@@ -5838,8 +7191,19 @@ export class VampireGameEngine {
     });
     this.composer?.dispose();
     this.rainMat.dispose();
+    this.shadowDecoyBodyMat.dispose();
+    this.shadowDecoyRingMat.dispose();
+    this.darknessPulseMat.dispose();
     (this.smokeMesh.material as THREE.Material).dispose();
+    (this.ambientMoteMesh.material as THREE.Material).dispose();
     (this.particleMesh.material as THREE.Material).dispose();
+    for (const def of this.fpArms.stealthMatDefaults) {
+      def.mat.dispose();
+    }
+    for (const def of this.vampire.stealthMatDefaults) {
+      def.mat.dispose();
+    }
+    this.audio.dispose();
     this.mats.dispose();
     this.textures.dispose();
     this.renderer.dispose();

@@ -3,6 +3,7 @@ export class GothicAudioEngine {
   private masterGain: GainNode | null = null;
   private ambientGain: GainNode | null = null;
   private windFilter: BiquadFilterNode | null = null;
+  private windHighFilter: BiquadFilterNode | null = null;
   private windGain: GainNode | null = null;
   private rainGain: GainNode | null = null;
   private rainFilter: BiquadFilterNode | null = null;
@@ -10,12 +11,21 @@ export class GothicAudioEngine {
   private whisperFormantA: BiquadFilterNode | null = null;
   private whisperFormantB: BiquadFilterNode | null = null;
   private ambientStarted = false;
+  private ambientDetailTimer = 7.5;
   private muted = false;
   private lastStepTime = 0;
   private lastHeartbeatTime = 0;
   private lastWhisperBurstTime = 0;
   private lastSuspicionCueTime = 0;
   private lastSiphonTickTime = 0;
+
+  public dispose(): void {
+    if (this.ctx) {
+      this.ctx.close().catch(() => {});
+      this.ctx = null;
+    }
+    this.ambientStarted = false;
+  }
 
   public isMuted(): boolean {
     return this.muted;
@@ -55,7 +65,7 @@ export class GothicAudioEngine {
     this.ambientStarted = true;
 
     this.ambientGain = ctx.createGain();
-    this.ambientGain.gain.value = 0.105;
+    this.ambientGain.gain.value = 0.165;
     this.ambientGain.connect(this.masterGain);
 
     // Deep cathedral sub-drone (D1 + A1 + minor third shimmer)
@@ -67,20 +77,23 @@ export class GothicAudioEngine {
       osc.type = idx === 0 ? 'sine' : 'triangle';
       osc.frequency.value = f;
       filter.type = 'lowpass';
-      filter.frequency.value = idx === 2 ? 220 : 140;
-      g.gain.value = idx === 0 ? 0.45 : 0.18;
+      filter.frequency.value = idx === 2 ? 210 : 135;
+      g.gain.value = idx === 0 ? 0.34 : idx === 1 ? 0.14 : 0.08;
       osc.connect(filter);
       filter.connect(g);
       g.connect(this.ambientGain!);
       osc.start();
     });
 
-    // Filtered wind noise
+    // Dual-band Victorian nocturnal wind noise (alley draft + rooftop eaves whistle)
     const bufSize = ctx.sampleRate * 3;
     const buffer = ctx.createBuffer(1, bufSize, ctx.sampleRate);
     const data = buffer.getChannelData(0);
+    let pink = 0;
     for (let i = 0; i < bufSize; i++) {
-      data[i] = Math.random() * 2 - 1;
+      const white = Math.random() * 2 - 1;
+      pink = 0.96 * pink + white * 0.22;
+      data[i] = white * 0.42 + pink * 0.58;
     }
     const noise = ctx.createBufferSource();
     noise.buffer = buffer;
@@ -88,24 +101,36 @@ export class GothicAudioEngine {
 
     const windFilter = ctx.createBiquadFilter();
     windFilter.type = 'bandpass';
-    windFilter.frequency.value = 340;
-    windFilter.Q.value = 3.2;
+    windFilter.frequency.value = 310;
+    windFilter.Q.value = 2.6;
+
+    const windHighFilter = ctx.createBiquadFilter();
+    windHighFilter.type = 'bandpass';
+    windHighFilter.frequency.value = 980;
+    windHighFilter.Q.value = 4.2;
 
     const windLfo = ctx.createOscillator();
     const windLfoGain = ctx.createGain();
-    windLfo.frequency.value = 0.08;
-    windLfoGain.gain.value = 130;
+    windLfo.frequency.value = 0.09;
+    windLfoGain.gain.value = 125;
     windLfo.connect(windLfoGain);
     windLfoGain.connect(windFilter.frequency);
     windLfo.start();
 
     const windGain = ctx.createGain();
-    windGain.gain.value = 0.12;
+    windGain.gain.value = 0.18;
+    const windHighGain = ctx.createGain();
+    windHighGain.gain.value = 0.055;
+
     this.windFilter = windFilter;
+    this.windHighFilter = windHighFilter;
     this.windGain = windGain;
     noise.connect(windFilter);
+    noise.connect(windHighFilter);
     windFilter.connect(windGain);
+    windHighFilter.connect(windHighGain);
     windGain.connect(this.ambientGain);
+    windHighGain.connect(windGain);
     noise.start();
 
     // Soft nocturnal rain patter noise layer (modulated by dynamic weather)
@@ -194,11 +219,92 @@ export class GothicAudioEngine {
     whisperSrc.start();
   }
 
+  public setAmbientFocus(active: boolean): void {
+    if (!this.ctx || !this.ambientGain || this.muted) return;
+    this.ambientGain.gain.setTargetAtTime(active ? 0.165 : 0.085, this.ctx.currentTime, 0.35);
+  }
+
   public updateWindAmbience(strength: number): void {
     if (!this.ctx || !this.windGain || !this.windFilter || this.muted) return;
     const clamped = Math.max(0.2, Math.min(1.3, strength));
-    this.windGain.gain.setTargetAtTime(0.07 + clamped * 0.11, this.ctx.currentTime, 0.25);
-    this.windFilter.frequency.setTargetAtTime(240 + clamped * 230, this.ctx.currentTime, 0.25);
+    this.windGain.gain.setTargetAtTime(0.11 + clamped * 0.14, this.ctx.currentTime, 0.25);
+    this.windFilter.frequency.setTargetAtTime(220 + clamped * 240, this.ctx.currentTime, 0.25);
+    if (this.windHighFilter) {
+      this.windHighFilter.frequency.setTargetAtTime(820 + clamped * 440, this.ctx.currentTime, 0.25);
+    }
+  }
+
+  public tickAmbientAtmosphere(dt: number, inCrypt: boolean, windStrength: number): void {
+    if (!this.ctx || !this.masterGain || !this.ambientStarted || this.muted) return;
+    this.ambientDetailTimer -= dt;
+    if (this.ambientDetailTimer > 0) return;
+    this.ambientDetailTimer = 10.5 + Math.random() * 8.5;
+
+    const t = this.ctx.currentTime;
+    const roll = Math.random();
+    if (!inCrypt && roll < 0.45) {
+      // Soft nocturnal wind gust sweeping between Victorian eaves
+      const dur = 1.6;
+      const bufSize = Math.floor(this.ctx.sampleRate * dur);
+      const buf = this.ctx.createBuffer(1, bufSize, this.ctx.sampleRate);
+      const d = buf.getChannelData(0);
+      for (let i = 0; i < bufSize; i++) {
+        const env = Math.sin((i / bufSize) * Math.PI);
+        d[i] = (Math.random() * 2 - 1) * env;
+      }
+      const src = this.ctx.createBufferSource();
+      src.buffer = buf;
+      const f = this.ctx.createBiquadFilter();
+      f.type = 'bandpass';
+      f.frequency.setValueAtTime(340 + windStrength * 160, t);
+      f.frequency.exponentialRampToValueAtTime(640 + windStrength * 220, t + dur * 0.55);
+      f.frequency.exponentialRampToValueAtTime(260, t + dur);
+      f.Q.value = 3.8;
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(0.0005, t);
+      g.gain.linearRampToValueAtTime(0.032 * Math.min(1.25, windStrength), t + dur * 0.45);
+      g.gain.exponentialRampToValueAtTime(0.0005, t + dur);
+      src.connect(f);
+      f.connect(g);
+      g.connect(this.masterGain);
+      src.start(t);
+    } else if (roll < 0.78) {
+      // Very distant muted clock-tower / iron-gate metallic resonance
+      const osc = this.ctx.createOscillator();
+      const filter = this.ctx.createBiquadFilter();
+      const g = this.ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(inCrypt ? 146.83 : 196.0, t);
+      filter.type = 'lowpass';
+      filter.frequency.value = 360;
+      g.gain.setValueAtTime(0.0005, t);
+      g.gain.linearRampToValueAtTime(0.022, t + 0.08);
+      g.gain.exponentialRampToValueAtTime(0.0004, t + 2.4);
+      osc.connect(filter);
+      filter.connect(g);
+      g.connect(this.masterGain);
+      osc.start(t);
+      osc.stop(t + 2.5);
+    } else {
+      // Subtle timber/iron shutter creak in the night breeze
+      const osc = this.ctx.createOscillator();
+      const filter = this.ctx.createBiquadFilter();
+      const g = this.ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(420, t);
+      osc.frequency.exponentialRampToValueAtTime(295, t + 0.42);
+      filter.type = 'bandpass';
+      filter.frequency.value = 520;
+      filter.Q.value = 5.5;
+      g.gain.setValueAtTime(0.0005, t);
+      g.gain.linearRampToValueAtTime(0.018, t + 0.08);
+      g.gain.exponentialRampToValueAtTime(0.0004, t + 0.48);
+      osc.connect(filter);
+      filter.connect(g);
+      g.connect(this.masterGain);
+      osc.start(t);
+      osc.stop(t + 0.5);
+    }
   }
 
   public updateWeatherAmbience(rainIntensity: number, fogIntensity: number): void {
@@ -520,41 +626,55 @@ export class GothicAudioEngine {
     if (!ctx || !this.masterGain || this.muted) return;
     const t = ctx.currentTime;
 
-    const bufSize = Math.floor(ctx.sampleRate * 0.32);
+    // 1. Crisp brass gas-valve snap
+    const click = ctx.createOscillator();
+    const clickGain = ctx.createGain();
+    click.type = 'triangle';
+    click.frequency.setValueAtTime(1950, t);
+    click.frequency.exponentialRampToValueAtTime(680, t + 0.045);
+    clickGain.gain.setValueAtTime(0.12, t);
+    clickGain.gain.exponentialRampToValueAtTime(0.001, t + 0.055);
+    click.connect(clickGain);
+    clickGain.connect(this.masterGain);
+    click.start(t);
+    click.stop(t + 0.06);
+
+    // 2. Pressurized gas-flame hiss extinguished
+    const bufSize = Math.floor(ctx.sampleRate * 0.34);
     const buffer = ctx.createBuffer(1, bufSize, ctx.sampleRate);
     const data = buffer.getChannelData(0);
-    for (let i = 0; i < bufSize; i++) data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / bufSize, 1.35);
+    for (let i = 0; i < bufSize; i++) data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / bufSize, 1.3);
 
     const src = ctx.createBufferSource();
     src.buffer = buffer;
 
     const filter = ctx.createBiquadFilter();
     filter.type = 'bandpass';
-    filter.frequency.setValueAtTime(1350, t);
-    filter.frequency.exponentialRampToValueAtTime(280, t + 0.28);
-    filter.Q.value = 1.6;
+    filter.frequency.setValueAtTime(1650, t + 0.02);
+    filter.frequency.exponentialRampToValueAtTime(260, t + 0.32);
+    filter.Q.value = 1.9;
 
     const gain = ctx.createGain();
-    gain.gain.setValueAtTime(0.2, t);
-    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.3);
+    gain.gain.setValueAtTime(0.24, t + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.33);
 
     src.connect(filter);
     filter.connect(gain);
     gain.connect(this.masterGain);
-    src.start(t);
+    src.start(t + 0.02);
 
-    // Subtle shadow implosion sub-pulse
+    // 3. Subtle shadow vacuum sub-pulse
     const osc = ctx.createOscillator();
     const oGain = ctx.createGain();
     osc.type = 'sine';
-    osc.frequency.setValueAtTime(135, t);
-    osc.frequency.exponentialRampToValueAtTime(44, t + 0.22);
-    oGain.gain.setValueAtTime(0.11, t);
-    oGain.gain.exponentialRampToValueAtTime(0.001, t + 0.24);
+    osc.frequency.setValueAtTime(128, t);
+    osc.frequency.exponentialRampToValueAtTime(40, t + 0.24);
+    oGain.gain.setValueAtTime(0.14, t);
+    oGain.gain.exponentialRampToValueAtTime(0.001, t + 0.26);
     osc.connect(oGain);
     oGain.connect(this.masterGain);
     osc.start(t);
-    osc.stop(t + 0.25);
+    osc.stop(t + 0.27);
   }
 
   public playBatSwarm(): void {
@@ -754,8 +874,20 @@ export class GothicAudioEngine {
     if (!ctx || !this.masterGain || this.muted) return;
     const t = ctx.currentTime;
 
-    // Urgent double bronze toll
+    // Urgent double bronze toll with crisp metallic clapper strike
     [0, 0.34].forEach((offset) => {
+      const strike = ctx.createOscillator();
+      const sGain = ctx.createGain();
+      strike.type = 'triangle';
+      strike.frequency.setValueAtTime(1650, t + offset);
+      strike.frequency.exponentialRampToValueAtTime(780, t + offset + 0.08);
+      sGain.gain.setValueAtTime(0.16, t + offset);
+      sGain.gain.exponentialRampToValueAtTime(0.001, t + offset + 0.09);
+      strike.connect(sGain);
+      sGain.connect(this.masterGain!);
+      strike.start(t + offset);
+      strike.stop(t + offset + 0.1);
+
       const partials = [392.0, 587.33, 783.99, 1174.66];
       partials.forEach((f, i) => {
         const osc = ctx.createOscillator();
@@ -777,17 +909,30 @@ export class GothicAudioEngine {
     if (!ctx || !this.masterGain || this.muted) return;
     const t = ctx.currentTime;
 
+    // Rope/iron latch snap + muffled damped bronze thump
+    const snap = ctx.createOscillator();
+    const snapGain = ctx.createGain();
+    snap.type = 'sawtooth';
+    snap.frequency.setValueAtTime(1250, t);
+    snap.frequency.exponentialRampToValueAtTime(340, t + 0.07);
+    snapGain.gain.setValueAtTime(0.13, t);
+    snapGain.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
+    snap.connect(snapGain);
+    snapGain.connect(this.masterGain);
+    snap.start(t);
+    snap.stop(t + 0.09);
+
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     osc.type = 'triangle';
-    osc.frequency.setValueAtTime(320, t);
-    osc.frequency.exponentialRampToValueAtTime(95, t + 0.18);
-    gain.gain.setValueAtTime(0.18, t);
-    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
+    osc.frequency.setValueAtTime(280, t + 0.03);
+    osc.frequency.exponentialRampToValueAtTime(86, t + 0.24);
+    gain.gain.setValueAtTime(0.2, t + 0.03);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.26);
     osc.connect(gain);
     gain.connect(this.masterGain);
-    osc.start(t);
-    osc.stop(t + 0.21);
+    osc.start(t + 0.03);
+    osc.stop(t + 0.28);
   }
 
   public playPropBreak(kind: 'barrel' | 'urn'): void {
@@ -796,23 +941,23 @@ export class GothicAudioEngine {
     const t = ctx.currentTime;
 
     // Noise burst for splintering wood / shattering ceramic
-    const dur = kind === 'urn' ? 0.26 : 0.34;
+    const dur = kind === 'urn' ? 0.26 : 0.36;
     const bufSize = Math.floor(ctx.sampleRate * dur);
     const buffer = ctx.createBuffer(1, bufSize, ctx.sampleRate);
     const data = buffer.getChannelData(0);
     for (let i = 0; i < bufSize; i++) {
-      data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / bufSize, 1.5);
+      data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / bufSize, 1.45);
     }
     const src = ctx.createBufferSource();
     src.buffer = buffer;
 
     const filter = ctx.createBiquadFilter();
     filter.type = 'bandpass';
-    filter.frequency.setValueAtTime(kind === 'urn' ? 2400 : 720, t);
-    filter.Q.value = kind === 'urn' ? 2.2 : 1.1;
+    filter.frequency.setValueAtTime(kind === 'urn' ? 2550 : 680, t);
+    filter.Q.value = kind === 'urn' ? 2.4 : 1.05;
 
     const gain = ctx.createGain();
-    gain.gain.setValueAtTime(0.32, t);
+    gain.gain.setValueAtTime(0.34, t);
     gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
 
     src.connect(filter);
@@ -820,20 +965,20 @@ export class GothicAudioEngine {
     gain.connect(this.masterGain);
     src.start(t);
 
-    // Secondary clatter shard pings
-    const shardFreqs = kind === 'urn' ? [1650, 2240, 2900] : [210, 145];
+    // Secondary clatter shard pings / iron barrel hoop clatter
+    const shardFreqs = kind === 'urn' ? [1680, 2320, 3050] : [220, 142, 640];
     shardFreqs.forEach((f, idx) => {
       const osc = ctx.createOscillator();
       const oGain = ctx.createGain();
-      osc.type = kind === 'urn' ? 'sine' : 'triangle';
-      osc.frequency.setValueAtTime(f, t + idx * 0.035);
-      osc.frequency.exponentialRampToValueAtTime(f * 0.65, t + idx * 0.035 + 0.11);
-      oGain.gain.setValueAtTime(0.14, t + idx * 0.035);
-      oGain.gain.exponentialRampToValueAtTime(0.001, t + idx * 0.035 + 0.12);
+      osc.type = kind === 'urn' || idx === 2 ? 'sine' : 'triangle';
+      osc.frequency.setValueAtTime(f, t + idx * 0.038);
+      osc.frequency.exponentialRampToValueAtTime(f * 0.62, t + idx * 0.038 + 0.12);
+      oGain.gain.setValueAtTime(idx === 2 ? 0.09 : 0.15, t + idx * 0.038);
+      oGain.gain.exponentialRampToValueAtTime(0.001, t + idx * 0.038 + 0.13);
       osc.connect(oGain);
       oGain.connect(this.masterGain!);
-      osc.start(t + idx * 0.035);
-      osc.stop(t + idx * 0.035 + 0.13);
+      osc.start(t + idx * 0.038);
+      osc.stop(t + idx * 0.038 + 0.14);
     });
   }
 
@@ -959,11 +1104,31 @@ export class GothicAudioEngine {
     const ctx = this.ensureContext();
     if (!ctx || !this.masterGain || this.muted) return;
     const t = ctx.currentTime;
+    // Shadowy tendril lash + low abyssal lock
+    const bufSize = Math.floor(ctx.sampleRate * 0.28);
+    const buf = ctx.createBuffer(1, bufSize, ctx.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < bufSize; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / bufSize);
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    const bf = ctx.createBiquadFilter();
+    bf.type = 'bandpass';
+    bf.frequency.setValueAtTime(1100, t);
+    bf.frequency.exponentialRampToValueAtTime(210, t + 0.26);
+    bf.Q.value = 2.4;
+    const ng = ctx.createGain();
+    ng.gain.setValueAtTime(0.2, t);
+    ng.gain.exponentialRampToValueAtTime(0.001, t + 0.27);
+    src.connect(bf);
+    bf.connect(ng);
+    ng.connect(this.masterGain);
+    src.start(t);
+
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     osc.type = 'sawtooth';
-    osc.frequency.setValueAtTime(160, t);
-    osc.frequency.exponentialRampToValueAtTime(52, t + 0.35);
+    osc.frequency.setValueAtTime(155, t);
+    osc.frequency.exponentialRampToValueAtTime(48, t + 0.35);
     const filter = ctx.createBiquadFilter();
     filter.type = 'lowpass';
     filter.frequency.setValueAtTime(620, t);
@@ -981,6 +1146,28 @@ export class GothicAudioEngine {
     const ctx = this.ensureContext();
     if (!ctx || !this.masterGain || this.muted) return;
     const t = ctx.currentTime;
+    // Hollow darkness wave + low abyssal triad
+    const bufSize = Math.floor(ctx.sampleRate * 0.65);
+    const buf = ctx.createBuffer(1, bufSize, ctx.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < bufSize; i++) {
+      d[i] = (Math.random() * 2 - 1) * Math.sin((i / bufSize) * Math.PI);
+    }
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    const bf = ctx.createBiquadFilter();
+    bf.type = 'bandpass';
+    bf.frequency.setValueAtTime(780, t);
+    bf.frequency.exponentialRampToValueAtTime(180, t + 0.62);
+    bf.Q.value = 2.0;
+    const ng = ctx.createGain();
+    ng.gain.setValueAtTime(0.18, t);
+    ng.gain.exponentialRampToValueAtTime(0.001, t + 0.64);
+    src.connect(bf);
+    bf.connect(ng);
+    ng.connect(this.masterGain);
+    src.start(t);
+
     [55, 82.41, 110].forEach((f, idx) => {
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
@@ -988,7 +1175,7 @@ export class GothicAudioEngine {
       osc.frequency.setValueAtTime(f, t);
       osc.frequency.exponentialRampToValueAtTime(f * 0.72, t + 0.7);
       gain.gain.setValueAtTime(0.001, t);
-      gain.gain.linearRampToValueAtTime(0.18 / (idx + 1), t + 0.08);
+      gain.gain.linearRampToValueAtTime(0.19 / (idx + 1), t + 0.08);
       gain.gain.exponentialRampToValueAtTime(0.001, t + 0.75);
       osc.connect(gain);
       gain.connect(this.masterGain!);
@@ -1192,5 +1379,95 @@ export class GothicAudioEngine {
       osc.start(t + 0.14 + i * 0.06);
       osc.stop(t + 1.3);
     });
+  }
+
+  public playShadowDecoy(): void {
+    const ctx = this.ensureContext();
+    if (!ctx || !this.masterGain || this.muted) return;
+    const t = ctx.currentTime;
+
+    // Spectral double shimmer (hollow D3 -> A3 whisper chime)
+    [146.83, 220.0, 277.18].forEach((f, idx) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = idx === 0 ? 'triangle' : 'sine';
+      osc.frequency.setValueAtTime(f, t + idx * 0.045);
+      osc.frequency.exponentialRampToValueAtTime(f * 0.94, t + 0.55);
+      gain.gain.setValueAtTime(0.001, t + idx * 0.045);
+      gain.gain.linearRampToValueAtTime(0.11 / (idx + 1), t + idx * 0.045 + 0.04);
+      gain.gain.exponentialRampToValueAtTime(0.0008, t + 0.62);
+      osc.connect(gain);
+      gain.connect(this.masterGain!);
+      osc.start(t + idx * 0.045);
+      osc.stop(t + 0.65);
+    });
+  }
+
+  public playDarknessPulse(): void {
+    const ctx = this.ensureContext();
+    if (!ctx || !this.masterGain || this.muted) return;
+    const t = ctx.currentTime;
+
+    // Deep abyssal shockwave drop + dark wind sweep
+    const sub = ctx.createOscillator();
+    const subGain = ctx.createGain();
+    sub.type = 'sine';
+    sub.frequency.setValueAtTime(140, t);
+    sub.frequency.exponentialRampToValueAtTime(34, t + 0.48);
+    subGain.gain.setValueAtTime(0.32, t);
+    subGain.gain.exponentialRampToValueAtTime(0.001, t + 0.52);
+    sub.connect(subGain);
+    subGain.connect(this.masterGain);
+    sub.start(t);
+    sub.stop(t + 0.54);
+
+    const bufSize = Math.floor(ctx.sampleRate * 0.55);
+    const buf = ctx.createBuffer(1, bufSize, ctx.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < bufSize; i++) {
+      d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / bufSize, 1.35);
+    }
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    const bf = ctx.createBiquadFilter();
+    bf.type = 'bandpass';
+    bf.frequency.setValueAtTime(1150, t);
+    bf.frequency.exponentialRampToValueAtTime(160, t + 0.52);
+    bf.Q.value = 1.6;
+    const ng = ctx.createGain();
+    ng.gain.setValueAtTime(0.28, t);
+    ng.gain.exponentialRampToValueAtTime(0.001, t + 0.54);
+    src.connect(bf);
+    bf.connect(ng);
+    ng.connect(this.masterGain);
+    src.start(t);
+  }
+
+  public playDawnBurnTick(): void {
+    const ctx = this.ensureContext();
+    if (!ctx || !this.masterGain || this.muted) return;
+    const t = ctx.currentTime;
+
+    const dur = 0.22;
+    const bufSize = Math.floor(ctx.sampleRate * dur);
+    const buf = ctx.createBuffer(1, bufSize, ctx.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < bufSize; i++) {
+      d[i] = (Math.random() * 2 - 1) * (1 - i / bufSize);
+    }
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    const f = ctx.createBiquadFilter();
+    f.type = 'bandpass';
+    f.frequency.setValueAtTime(2200, t);
+    f.frequency.exponentialRampToValueAtTime(950, t + dur);
+    f.Q.value = 2.0;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.11, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    src.connect(f);
+    f.connect(g);
+    g.connect(this.masterGain);
+    src.start(t);
   }
 }

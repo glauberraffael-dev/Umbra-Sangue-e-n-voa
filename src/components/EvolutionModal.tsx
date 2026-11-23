@@ -34,6 +34,7 @@ import {
 
 interface EvolutionModalProps {
   essence: number;
+  pendingEssence: number;
   disciplines: DisciplineLevels;
   unlockedSkills: string[];
   equippedPowers: ActivePowerId[];
@@ -129,6 +130,29 @@ function renderSkillGlyph(iconKey: string, color: string) {
           <path d="M9.5 1.5L4 9H8L6.5 14.5L12 7H8Z" fill={color} />
         </svg>
       );
+    case 'plunge':
+      return (
+        <svg viewBox="0 0 16 16" className="w-3.5 h-3.5 shrink-0" aria-hidden="true">
+          <path d="M8 2V12M8 12L4.5 8.5M8 12L11.5 8.5M3 14H13" fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" />
+        </svg>
+      );
+    case 'decoy':
+      return (
+        <svg viewBox="0 0 16 16" className="w-3.5 h-3.5 shrink-0" aria-hidden="true">
+          <circle cx="5.5" cy="5.5" r="2.2" fill="none" stroke={color} strokeWidth="1.3" />
+          <path d="M2.5 13C2.5 10.5 8.5 10.5 8.5 13" fill="none" stroke={color} strokeWidth="1.3" />
+          <circle cx="11" cy="5.5" r="1.9" fill={color} opacity="0.6" />
+          <path d="M9 12.5C9.4 10.7 13 10.7 13.5 12.5" fill="none" stroke={color} strokeWidth="1.2" strokeDasharray="2 1.5" />
+        </svg>
+      );
+    case 'pulse':
+      return (
+        <svg viewBox="0 0 16 16" className="w-3.5 h-3.5 shrink-0" aria-hidden="true">
+          <circle cx="8" cy="8" r="2.2" fill={color} />
+          <circle cx="8" cy="8" r="4.6" fill="none" stroke={color} strokeWidth="1.2" strokeDasharray="2.5 1.5" />
+          <circle cx="8" cy="8" r="6.8" fill="none" stroke={color} strokeWidth="1" opacity="0.55" />
+        </svg>
+      );
     default:
       return <Sparkles className="w-3.5 h-3.5 shrink-0" style={{ color }} />;
   }
@@ -136,6 +160,7 @@ function renderSkillGlyph(iconKey: string, color: string) {
 
 export function EvolutionModal({
   essence,
+  pendingEssence,
   disciplines,
   unlockedSkills,
   equippedPowers,
@@ -339,7 +364,7 @@ export function EvolutionModal({
             </h2>
             <p className="text-xs text-[#94a0bd] mt-1 tracking-wide">
               {activeTab === 'skills'
-                ? 'Árvore Ramificada das Disciplinas & Amálgamas: escolha bifurcações 2A/2B, equipe até 8 poderes ativos e reconfigure teclas.'
+                ? 'Árvore Ramificada das Disciplinas & Amálgamas: escolha bifurcações 2A/2B e 3A/3B, equipe até 8 poderes ativos e reconfigure teclas.'
                 : activeTab === 'dossier'
                 ? 'Perfis de nobres, guardas e caçadores encontrados em Ravencroft e suas fraquezas reveladas.'
                 : activeTab === 'huntlog'
@@ -349,9 +374,17 @@ export function EvolutionModal({
           </div>
 
           <div className="flex items-center gap-4">
-            <div className="px-4 py-2 bg-[#140c12] border border-[#7f1d1d] flex items-center gap-2.5">
+            <div
+              className="px-4 py-2 bg-[#140c12] border border-[#7f1d1d] flex items-center gap-2.5"
+              title="Essência coletada na noite atual só é consolidada ao repousar no Caixão da Cripta"
+            >
               <span className="text-xs uppercase tracking-[0.15em] text-[#fca5a5]">Essência:</span>
               <span className="text-lg font-bold tabular-nums text-white">{essence}</span>
+              {pendingEssence > 0 && (
+                <span className="text-xs font-semibold tabular-nums text-[#fcd34d]">
+                  (+{pendingEssence} na Cripta)
+                </span>
+              )}
             </div>
             <button
               onClick={onClose}
@@ -525,11 +558,13 @@ export function EvolutionModal({
                 const node2a = nodes.find((n) => n.slot === '2A')!;
                 const node2b = nodes.find((n) => n.slot === '2B')!;
                 const node3 = nodes.find((n) => n.slot === '3')!;
+                const node3b = nodes.find((n) => n.slot === '3B');
 
                 const u1 = unlockedSet.has(node1.id);
                 const u2a = unlockedSet.has(node2a.id);
                 const u2b = unlockedSet.has(node2b.id);
                 const u3 = unlockedSet.has(node3.id);
+                const u3b = node3b ? unlockedSet.has(node3b.id) : false;
 
                 return (
                   <div
@@ -587,29 +622,72 @@ export function EvolutionModal({
                       {renderSkillNodeCard(node2b, disc.accent, true)}
                     </div>
 
-                    {/* SVG Convergence Lines: 2A / 2B -> Tier 3 */}
-                    <svg
-                      viewBox="0 0 200 26"
-                      className="w-full h-6 overflow-visible"
-                      preserveAspectRatio="none"
-                      aria-hidden="true"
-                    >
-                      <path
-                        d="M 48 0 C 48 13, 100 13, 100 26"
-                        fill="none"
-                        stroke={u3 && u2a ? disc.accent : u2a ? `${disc.accent}70` : '#252b40'}
-                        strokeWidth={u3 && u2a ? 2.4 : 1.6}
-                      />
-                      <path
-                        d="M 152 0 C 152 13, 100 13, 100 26"
-                        fill="none"
-                        stroke={u3 && u2b ? disc.accent : u2b ? `${disc.accent}70` : '#252b40'}
-                        strokeWidth={u3 && u2b ? 2.4 : 1.6}
-                      />
-                    </svg>
+                    {/* SVG Lines: Tier 2A / 2B -> Tier 3 (or 3A / 3B bifurcation) */}
+                    {node3b ? (
+                      <>
+                        <svg
+                          viewBox="0 0 200 26"
+                          className="w-full h-6 overflow-visible"
+                          preserveAspectRatio="none"
+                          aria-hidden="true"
+                        >
+                          <path
+                            d="M 48 0 L 48 26"
+                            fill="none"
+                            stroke={u3 && u2a ? disc.accent : u2a ? `${disc.accent}70` : '#252b40'}
+                            strokeWidth={u3 && u2a ? 2.4 : 1.5}
+                          />
+                          <path
+                            d="M 152 0 C 152 13, 48 13, 48 26"
+                            fill="none"
+                            stroke={u3 && u2b ? disc.accent : u2b ? `${disc.accent}55` : '#252b40'}
+                            strokeWidth={u3 && u2b ? 2.2 : 1.3}
+                          />
+                          <path
+                            d="M 48 0 C 48 13, 152 13, 152 26"
+                            fill="none"
+                            stroke={u3b && u2a ? disc.accent : u2a ? `${disc.accent}55` : '#252b40'}
+                            strokeWidth={u3b && u2a ? 2.2 : 1.3}
+                          />
+                          <path
+                            d="M 152 0 L 152 26"
+                            fill="none"
+                            stroke={u3b && u2b ? disc.accent : u2b ? `${disc.accent}70` : '#252b40'}
+                            strokeWidth={u3b && u2b ? 2.4 : 1.5}
+                          />
+                        </svg>
 
-                    {/* Tier 3 Apex Node */}
-                    {renderSkillNodeCard(node3, disc.accent)}
+                        <div className="grid grid-cols-2 gap-2">
+                          {renderSkillNodeCard(node3, disc.accent, true)}
+                          {renderSkillNodeCard(node3b, disc.accent, true)}
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <svg
+                          viewBox="0 0 200 26"
+                          className="w-full h-6 overflow-visible"
+                          preserveAspectRatio="none"
+                          aria-hidden="true"
+                        >
+                          <path
+                            d="M 48 0 C 48 13, 100 13, 100 26"
+                            fill="none"
+                            stroke={u3 && u2a ? disc.accent : u2a ? `${disc.accent}70` : '#252b40'}
+                            strokeWidth={u3 && u2a ? 2.4 : 1.6}
+                          />
+                          <path
+                            d="M 152 0 C 152 13, 100 13, 100 26"
+                            fill="none"
+                            stroke={u3 && u2b ? disc.accent : u2b ? `${disc.accent}70` : '#252b40'}
+                            strokeWidth={u3 && u2b ? 2.4 : 1.6}
+                          />
+                        </svg>
+
+                        {/* Tier 3 Apex Node */}
+                        {renderSkillNodeCard(node3, disc.accent)}
+                      </>
+                    )}
                   </div>
                 );
               })}

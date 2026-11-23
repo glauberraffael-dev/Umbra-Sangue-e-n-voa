@@ -166,7 +166,9 @@ export interface GothicMaterialLibrary {
   stainedGlass: THREE.MeshStandardMaterial;
   roseWindow: THREE.MeshStandardMaterial;
   vampireCoat: THREE.MeshStandardMaterial;
+  vampireCoatSway: THREE.MeshStandardMaterial;
   vampireCrimson: THREE.MeshStandardMaterial;
+  vampireCrimsonSway: THREE.MeshStandardMaterial;
   vampireSkin: THREE.MeshStandardMaterial;
   vampireHair: THREE.MeshStandardMaterial;
   vampireEye: THREE.MeshBasicMaterial;
@@ -334,21 +336,43 @@ export function createGothicMaterialLibrary(
   const vampireCoat = applyPs2GothicShader(
     new THREE.MeshStandardMaterial({
       color: 0x161925,
-      roughness: 0.68,
-      metalness: 0.22,
+      roughness: 0.74,
+      metalness: 0.14,
     }),
     sharedUniforms,
-    { rimColor: 0x8ea8ff, rimStrength: 0.48, celBands: 3.0 },
+    { rimColor: 0x8ea8ff, rimStrength: 0.44, celBands: 3.0 },
+  );
+
+  const vampireCoatSway = applyPs2GothicShader(
+    new THREE.MeshStandardMaterial({
+      color: 0x161925,
+      roughness: 0.74,
+      metalness: 0.14,
+      side: THREE.DoubleSide,
+    }),
+    sharedUniforms,
+    { rimColor: 0x8ea8ff, rimStrength: 0.44, celBands: 3.0, windSway: true },
   );
 
   const vampireCrimson = applyPs2GothicShader(
     new THREE.MeshStandardMaterial({
-      color: 0x7f1d1d,
-      roughness: 0.46,
-      metalness: 0.25,
+      color: 0x881320,
+      roughness: 0.42,
+      metalness: 0.18,
     }),
     sharedUniforms,
-    { rimColor: 0xef4444, rimStrength: 0.4, celBands: 3.0 },
+    { rimColor: 0xef4444, rimStrength: 0.38, celBands: 3.0 },
+  );
+
+  const vampireCrimsonSway = applyPs2GothicShader(
+    new THREE.MeshStandardMaterial({
+      color: 0x881320,
+      roughness: 0.42,
+      metalness: 0.18,
+      side: THREE.DoubleSide,
+    }),
+    sharedUniforms,
+    { rimColor: 0xef4444, rimStrength: 0.38, celBands: 3.0, windSway: true },
   );
 
   const vampireSkin = applyPs2GothicShader(
@@ -444,7 +468,9 @@ export function createGothicMaterialLibrary(
     stainedGlass,
     roseWindow,
     vampireCoat,
+    vampireCoatSway,
     vampireCrimson,
+    vampireCrimsonSway,
     vampireSkin,
     vampireHair,
     vampireEye,
@@ -470,7 +496,9 @@ export function createGothicMaterialLibrary(
     stainedGlass,
     roseWindow,
     vampireCoat,
+    vampireCoatSway,
     vampireCrimson,
+    vampireCrimsonSway,
     vampireSkin,
     vampireHair,
     vampireEye,

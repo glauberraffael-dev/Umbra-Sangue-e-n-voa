@@ -26,20 +26,77 @@ export interface VampireRig {
 export function createVampireModel(
   mats: GothicMaterialLibrary,
   textures: GothicTextures,
+  sharedUniforms: StylizedShaderUniforms,
 ): VampireRig {
   const root = new THREE.Group();
   const bodyPivot = new THREE.Group();
   root.add(bodyPivot);
 
-  // Clone vampire materials so Obfuscate translucency never turns city architecture transparent
-  const coatMat = mats.vampireCoat.clone();
-  const crimsonMat = mats.vampireCrimson.clone();
-  const skinMat = mats.vampireSkin.clone();
-  const hairMat = mats.vampireHair.clone();
-  const ironMat = mats.iron.clone();
-  const capeMat = mats.vampireCoat.clone();
-  capeMat.side = THREE.DoubleSide;
-  const stealthMats: THREE.MeshStandardMaterial[] = [coatMat, crimsonMat, skinMat, hairMat, ironMat, capeMat];
+  // Clone & re-apply PS2 Gothic shader per stealth material so Obfuscate translucency
+  // works cleanly without breaking shader effects or windSway
+  const coatMat = applyPs2GothicShader(mats.vampireCoat.clone(), sharedUniforms, {
+    rimColor: 0x8ea8ff,
+    rimStrength: 0.44,
+    celBands: 3.0,
+  });
+  const coatHemMat = applyPs2GothicShader(mats.vampireCoatSway.clone(), sharedUniforms, {
+    rimColor: 0x8ea8ff,
+    rimStrength: 0.44,
+    celBands: 3.0,
+    windSway: true,
+  });
+  const crimsonMat = applyPs2GothicShader(mats.vampireCrimson.clone(), sharedUniforms, {
+    rimColor: 0xef4444,
+    rimStrength: 0.38,
+    celBands: 3.0,
+  });
+  const scarfTailMat = applyPs2GothicShader(mats.vampireCrimsonSway.clone(), sharedUniforms, {
+    rimColor: 0xef4444,
+    rimStrength: 0.38,
+    celBands: 3.0,
+    windSway: true,
+  });
+  const vestMat = applyPs2GothicShader(
+    new THREE.MeshStandardMaterial({
+      color: 0x26131c,
+      roughness: 0.62,
+      metalness: 0.12,
+    }),
+    sharedUniforms,
+    { rimColor: 0xc084fc, rimStrength: 0.25, celBands: 3.0 },
+  );
+  const skinMat = applyPs2GothicShader(mats.vampireSkin.clone(), sharedUniforms, {
+    rimColor: 0xa5b4fc,
+    rimStrength: 0.3,
+    celBands: 3.0,
+  });
+  const hairMat = applyPs2GothicShader(mats.vampireHair.clone(), sharedUniforms, {
+    rimColor: 0x6366f1,
+    rimStrength: 0.35,
+    celBands: 3.0,
+  });
+  const ironMat = applyPs2GothicShader(mats.iron.clone(), sharedUniforms, {
+    rimColor: 0x8ea6e6,
+    rimStrength: 0.35,
+    celBands: 3.0,
+  });
+  const brassMat = applyPs2GothicShader(mats.brass.clone(), sharedUniforms, {
+    rimColor: 0xffcf87,
+    rimStrength: 0.3,
+    celBands: 3.0,
+  });
+
+  const stealthMats: THREE.MeshStandardMaterial[] = [
+    coatMat,
+    coatHemMat,
+    crimsonMat,
+    scarfTailMat,
+    vestMat,
+    skinMat,
+    hairMat,
+    ironMat,
+    brassMat,
+  ];
   const stealthMatDefaults = stealthMats.map((mat) => ({
     mat,
     baseColor: mat.color.getHex(),
@@ -50,7 +107,7 @@ export function createVampireModel(
   }
 
   // Contact shadow grounded at y=0.02
-  const shadowGeo = new THREE.PlaneGeometry(1.7, 1.7);
+  const shadowGeo = new THREE.PlaneGeometry(1.5, 1.5);
   const shadowMat = new THREE.MeshBasicMaterial({
     map: textures.contactShadowMap,
     transparent: true,
@@ -62,161 +119,214 @@ export function createVampireModel(
   contactShadow.position.y = 0.02;
   root.add(contactShadow);
 
-  // Articulated Legs: Hip (y=0.92) -> Thigh -> Knee (y=-0.44) -> Shin + Boot
-  const thighGeo = new THREE.CylinderGeometry(0.112, 0.092, 0.46, 7);
-  const shinGeo = new THREE.CylinderGeometry(0.088, 0.072, 0.44, 7);
-  const bootGeo = new THREE.BoxGeometry(0.16, 0.16, 0.28);
+  // Articulated Slender Victorian Legs: Hip (y=0.94) -> Faceted Thigh -> Knee -> Shin + Sleek Boot
+  const thighGeo = new THREE.CapsuleGeometry(0.072, 0.28, 2, 7);
+  const shinGeo = new THREE.CapsuleGeometry(0.056, 0.25, 2, 7);
+  const bootShaftGeo = new THREE.CylinderGeometry(0.066, 0.06, 0.16, 7);
+  const bootFootGeo = new THREE.BoxGeometry(0.11, 0.085, 0.23);
 
   const makeLeg = (xOff: number) => {
     const legGroup = new THREE.Group();
-    legGroup.position.set(xOff, 0.92, 0);
+    legGroup.position.set(xOff, 0.94, 0);
 
     const thighMesh = new THREE.Mesh(thighGeo, coatMat);
     thighMesh.position.y = -0.22;
     thighMesh.castShadow = true;
 
     const shinGroup = new THREE.Group();
-    shinGroup.position.set(0, -0.44, 0);
+    shinGroup.position.set(0, -0.45, 0);
 
     const shinMesh = new THREE.Mesh(shinGeo, coatMat);
-    shinMesh.position.y = -0.22;
+    shinMesh.position.y = -0.21;
     shinMesh.castShadow = true;
 
-    const bootMesh = new THREE.Mesh(bootGeo, ironMat);
-    bootMesh.position.set(0, -0.41, 0.055);
+    const bootShaft = new THREE.Mesh(bootShaftGeo, ironMat);
+    bootShaft.position.set(0, -0.34, 0);
+    bootShaft.castShadow = true;
+
+    const bootMesh = new THREE.Mesh(bootFootGeo, ironMat);
+    bootMesh.position.set(0, -0.44, 0.048);
     bootMesh.castShadow = true;
 
-    shinGroup.add(shinMesh, bootMesh);
+    shinGroup.add(shinMesh, bootShaft, bootMesh);
     legGroup.add(thighMesh, shinGroup);
     return { legGroup, shinGroup };
   };
 
-  const leftLegBuilt = makeLeg(-0.15);
-  const rightLegBuilt = makeLeg(0.15);
+  const leftLegBuilt = makeLeg(-0.125);
+  const rightLegBuilt = makeLeg(0.125);
   const leftLeg = leftLegBuilt.legGroup;
   const rightLeg = rightLegBuilt.legGroup;
   const leftShin = leftLegBuilt.shinGroup;
   const rightShin = rightLegBuilt.shinGroup;
   bodyPivot.add(leftLeg, rightLeg);
 
-  // Articulated Spine Pivot at hip (y=0.92) for torso twist, lean, and breathing
+  // Articulated Spine Pivot at slender waist/hip (y=0.94)
   const spinePivot = new THREE.Group();
-  spinePivot.position.set(0, 0.92, 0);
+  spinePivot.position.set(0, 0.94, 0);
   bodyPivot.add(spinePivot);
 
-  // Torso (noble armored vest + crimson sash, relative to spinePivot y=0)
-  const torsoMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.27, 0.21, 0.72, 8), coatMat);
-  torsoMesh.position.y = 0.36;
+  // Slender Victorian Upper Torso & Tailored Waistcoat Layer
+  const torsoMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.205, 0.162, 0.66, 8), coatMat);
+  torsoMesh.position.y = 0.34;
   torsoMesh.castShadow = true;
   spinePivot.add(torsoMesh);
 
-  const cravat = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.36, 0.25), crimsonMat);
-  cravat.position.set(0, 0.44, 0.06);
-  cravat.castShadow = true;
-  spinePivot.add(cravat);
+  // Inner fitted waistcoat visible through front coat opening + brass buttons
+  const vestPanel = new THREE.Mesh(new THREE.CapsuleGeometry(0.145, 0.34, 2, 7), vestMat);
+  vestPanel.scale.set(0.82, 1.0, 0.72);
+  vestPanel.position.set(0, 0.34, 0.065);
+  vestPanel.castShadow = true;
+  spinePivot.add(vestPanel);
 
-  // Pauldrons (accent armor)
-  const pauldronGeo = new THREE.SphereGeometry(0.16, 6, 5, 0, Math.PI * 2, 0, Math.PI * 0.6);
-  const pLeft = new THREE.Mesh(pauldronGeo, ironMat);
-  pLeft.position.set(-0.31, 0.64, 0);
-  pLeft.rotation.z = 0.35;
-  const pRight = new THREE.Mesh(pauldronGeo, ironMat);
-  pRight.position.set(0.31, 0.64, 0);
-  pRight.rotation.z = -0.35;
-  spinePivot.add(pLeft, pRight);
+  for (let b = 0; b < 3; b++) {
+    const btn = new THREE.Mesh(new THREE.OctahedronGeometry(0.016, 0), brassMat);
+    btn.position.set(0, 0.22 + b * 0.1, 0.172);
+    spinePivot.add(btn);
+  }
 
-  // High gothic vampire collar (ExtrudeGeometry)
-  const collarShape = new THREE.Shape();
-  collarShape.moveTo(-0.32, 0);
-  collarShape.lineTo(-0.42, 0.36);
-  collarShape.lineTo(0, 0.24);
-  collarShape.lineTo(0.42, 0.36);
-  collarShape.lineTo(0.32, 0);
-  collarShape.closePath();
-  const collarGeo = new THREE.ExtrudeGeometry(collarShape, {
-    depth: 0.05,
-    bevelEnabled: true,
-    bevelThickness: 0.02,
-    bevelSize: 0.02,
-    bevelSegments: 1,
-  });
-  const collar = new THREE.Mesh(collarGeo, crimsonMat);
-  collar.position.set(0, 0.62, -0.18);
-  collar.rotation.x = -0.25;
-  collar.castShadow = true;
-  spinePivot.add(collar);
+  // Tailored Frock Coat Lapels framing the crimson cravat/scarf
+  const lapelGeo = new THREE.BoxGeometry(0.055, 0.34, 0.035);
+  const lapelL = new THREE.Mesh(lapelGeo, coatMat);
+  lapelL.position.set(-0.075, 0.43, 0.165);
+  lapelL.rotation.set(-0.08, 0.28, -0.22);
+  const lapelR = new THREE.Mesh(lapelGeo, coatMat);
+  lapelR.position.set(0.075, 0.43, 0.165);
+  lapelR.rotation.set(-0.08, -0.28, 0.22);
+  spinePivot.add(lapelL, lapelR);
 
-  // Flowing cloak (pivoted at shoulders relative to spinePivot y=0.64)
-  const capeGeo = new THREE.CylinderGeometry(0.24, 0.58, 1.38, 7, 1, true, Math.PI * 0.2, Math.PI * 1.6);
-  capeGeo.translate(0, -0.69, 0);
-  const cape = new THREE.Mesh(capeGeo, capeMat);
-  cape.position.set(0, 0.64, -0.04);
-  cape.rotation.x = 0.14;
+  // Tailored Waist Sash / Coat Belt
+  const coatBelt = new THREE.Mesh(new THREE.CylinderGeometry(0.168, 0.172, 0.06, 8), ironMat);
+  coatBelt.position.set(0, 0.08, 0);
+  const beltClasp = new THREE.Mesh(new THREE.BoxGeometry(0.065, 0.055, 0.03), brassMat);
+  beltClasp.position.set(0, 0.08, 0.168);
+  spinePivot.add(coatBelt, beltClasp);
+
+  // High Fitted Victorian Standing Collar (gola alta, clean aristocratic wrap, no bat-wing tips)
+  const collarOuter = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.145, 0.166, 0.165, 8, 1, true, Math.PI * 0.18, Math.PI * 1.64),
+    coatHemMat,
+  );
+  collarOuter.position.set(0, 0.67, -0.01);
+  collarOuter.castShadow = true;
+  const collarInnerRim = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.141, 0.16, 0.135, 8, 1, true, Math.PI * 0.22, Math.PI * 1.56),
+    crimsonMat,
+  );
+  collarInnerRim.position.set(0, 0.665, -0.008);
+  spinePivot.add(collarOuter, collarInnerRim);
+
+  // Crimson Silk Scarf (lenço carmesim): fitted neck wrap + folded knot + wind-swaying draped tail
+  const scarfWrap = new THREE.Mesh(new THREE.TorusGeometry(0.128, 0.036, 5, 10), crimsonMat);
+  scarfWrap.rotation.x = Math.PI / 2;
+  scarfWrap.position.set(0, 0.635, 0.01);
+
+  const scarfKnot = new THREE.Mesh(new THREE.OctahedronGeometry(0.062, 0), crimsonMat);
+  scarfKnot.scale.set(1.05, 1.15, 0.72);
+  scarfKnot.position.set(0, 0.585, 0.142);
+
+  // Draped scarf tail pinned at top (uv.y = 1.0) so bottom tip sways smoothly via windSway
+  const scarfTailGeo = new THREE.PlaneGeometry(0.095, 0.34, 1, 4);
+  scarfTailGeo.translate(0, -0.17, 0);
+  const scarfTail = new THREE.Mesh(scarfTailGeo, scarfTailMat);
+  scarfTail.position.set(0.025, 0.57, 0.168);
+  scarfTail.rotation.set(-0.12, 0.18, -0.14);
+  scarfTail.castShadow = true;
+  spinePivot.add(scarfWrap, scarfKnot, scarfTail);
+
+  // Long Tailored Victorian Overcoat Lower Skirt (pinned at waist uv.y=1, lower hem reacts via windSway)
+  // Assigned to `cape` on VampireRig so existing dash/jump/combat tilt animations drive the coattails smoothly
+  const coatSkirtGeo = new THREE.CylinderGeometry(
+    0.172,
+    0.265,
+    0.84,
+    10,
+    4,
+    true,
+    Math.PI * 0.14,
+    Math.PI * 1.72,
+  );
+  coatSkirtGeo.translate(0, -0.42, 0);
+  const cape = new THREE.Mesh(coatSkirtGeo, coatHemMat);
+  cape.position.set(0, 0.08, 0);
+  cape.rotation.x = 0.06;
   cape.castShadow = true;
   spinePivot.add(cape);
 
-  // Articulated Arms: Shoulder (y=0.62) -> Upper Arm -> Elbow (y=-0.34) -> Forearm + 3 Claws
-  const upperArmGeo = new THREE.CylinderGeometry(0.088, 0.072, 0.35, 6);
-  const forearmGeo = new THREE.CylinderGeometry(0.07, 0.055, 0.34, 6);
-  const palmGeo = new THREE.BoxGeometry(0.085, 0.1, 0.09);
-  const clawGeo = new THREE.ConeGeometry(0.016, 0.13, 4);
+  // Slender Articulated Arms: Fitted Shoulder Seam (y=0.60) -> Capsule Upper Arm -> Forearm + Coat Cuff + Claws
+  const shoulderCapGeo = new THREE.SphereGeometry(0.068, 6, 5);
+  const upperArmGeo = new THREE.CapsuleGeometry(0.055, 0.23, 2, 6);
+  const forearmGeo = new THREE.CapsuleGeometry(0.045, 0.21, 2, 6);
+  const cuffGeo = new THREE.CylinderGeometry(0.056, 0.062, 0.095, 7);
+  const palmGeo = new THREE.BoxGeometry(0.072, 0.085, 0.078);
+  const clawGeo = new THREE.ConeGeometry(0.013, 0.115, 4);
 
   const makeArm = (xOff: number) => {
     const armGroup = new THREE.Group();
-    armGroup.position.set(xOff, 0.62, 0);
+    armGroup.position.set(xOff, 0.6, 0);
+
+    const shoulderCap = new THREE.Mesh(shoulderCapGeo, coatMat);
+    shoulderCap.position.y = -0.02;
 
     const upperMesh = new THREE.Mesh(upperArmGeo, coatMat);
-    upperMesh.position.y = -0.17;
+    upperMesh.position.y = -0.16;
     upperMesh.castShadow = true;
 
     const forearmGroup = new THREE.Group();
-    forearmGroup.position.set(0, -0.34, 0);
+    forearmGroup.position.set(0, -0.32, 0);
 
     const forearmMesh = new THREE.Mesh(forearmGeo, coatMat);
-    forearmMesh.position.y = -0.17;
+    forearmMesh.position.y = -0.15;
     forearmMesh.castShadow = true;
 
+    const cuffMesh = new THREE.Mesh(cuffGeo, crimsonMat);
+    cuffMesh.position.y = -0.26;
+    cuffMesh.castShadow = true;
+
     const palmMesh = new THREE.Mesh(palmGeo, skinMat);
-    palmMesh.position.y = -0.36;
+    palmMesh.position.y = -0.34;
 
     for (let c = -1; c <= 1; c++) {
       const claw = new THREE.Mesh(clawGeo, mats.vampireEye);
-      claw.position.set(c * 0.028, -0.46, 0.03);
+      claw.position.set(c * 0.024, -0.43, 0.026);
       claw.rotation.x = Math.PI + 0.28;
       forearmGroup.add(claw);
     }
 
-    forearmGroup.add(forearmMesh, palmMesh);
-    armGroup.add(upperMesh, forearmGroup);
+    forearmGroup.add(forearmMesh, cuffMesh, palmMesh);
+    armGroup.add(shoulderCap, upperMesh, forearmGroup);
     return { armGroup, forearmGroup };
   };
 
-  const leftArmBuilt = makeArm(-0.34);
-  const rightArmBuilt = makeArm(0.34);
+  const leftArmBuilt = makeArm(-0.255);
+  const rightArmBuilt = makeArm(0.255);
   const leftArm = leftArmBuilt.armGroup;
   const rightArm = rightArmBuilt.armGroup;
   const leftForearm = leftArmBuilt.forearmGroup;
   const rightForearm = rightArmBuilt.forearmGroup;
   spinePivot.add(leftArm, rightArm);
 
-  // Head + angular hair + glowing crimson eyes (relative to spinePivot y=0.84)
+  // Refined Victorian Head + Swept Hair + Glowing Crimson Eyes (relative to spinePivot y=0.83)
   const head = new THREE.Group();
-  head.position.set(0, 0.84, 0.02);
-  const cranium = new THREE.Mesh(new THREE.OctahedronGeometry(0.19, 1), skinMat);
-  cranium.scale.set(0.86, 1.08, 0.94);
+  head.position.set(0, 0.83, 0.02);
+  const cranium = new THREE.Mesh(new THREE.OctahedronGeometry(0.165, 1), skinMat);
+  cranium.scale.set(0.84, 1.08, 0.92);
   cranium.castShadow = true;
   head.add(cranium);
 
-  const hair = new THREE.Mesh(new THREE.ConeGeometry(0.21, 0.34, 6), hairMat);
-  hair.position.set(0, 0.12, -0.04);
-  hair.rotation.x = -0.45;
-  head.add(hair);
+  const hairCrown = new THREE.Mesh(new THREE.CylinderGeometry(0.145, 0.16, 0.14, 7), hairMat);
+  hairCrown.position.set(0, 0.09, -0.02);
+  hairCrown.rotation.x = -0.2;
+  const hairBack = new THREE.Mesh(new THREE.ConeGeometry(0.165, 0.28, 6), hairMat);
+  hairBack.position.set(0, 0.07, -0.08);
+  hairBack.rotation.x = -0.62;
+  head.add(hairCrown, hairBack);
 
-  const eyeGeo = new THREE.BoxGeometry(0.05, 0.022, 0.04);
+  const eyeGeo = new THREE.BoxGeometry(0.044, 0.018, 0.036);
   const eyeL = new THREE.Mesh(eyeGeo, mats.vampireEye);
-  eyeL.position.set(-0.065, 0.02, 0.16);
+  eyeL.position.set(-0.056, 0.018, 0.142);
   const eyeR = new THREE.Mesh(eyeGeo, mats.vampireEye);
-  eyeR.position.set(0.065, 0.02, 0.16);
+  eyeR.position.set(0.056, 0.018, 0.142);
   head.add(eyeL, eyeR);
   spinePivot.add(head);
 
@@ -258,6 +368,170 @@ export function createVampireModel(
     contactShadow,
     batRing,
     stealthMats,
+    stealthMatDefaults,
+  };
+}
+
+export interface VampireFirstPersonRig {
+  root: THREE.Group;
+  leftArm: THREE.Group;
+  rightArm: THREE.Group;
+  leftForearm: THREE.Group;
+  rightForearm: THREE.Group;
+  stealthMatDefaults: Array<{ mat: THREE.MeshStandardMaterial; baseColor: number }>;
+}
+
+export function createVampireFirstPersonArms(
+  mats: GothicMaterialLibrary,
+  sharedUniforms: StylizedShaderUniforms,
+): VampireFirstPersonRig {
+  const root = new THREE.Group();
+
+  const coatMat = applyPs2GothicShader(mats.vampireCoat.clone(), sharedUniforms, {
+    rimColor: 0x8ea8ff,
+    rimStrength: 0.42,
+    celBands: 3.0,
+  });
+  const crimsonMat = applyPs2GothicShader(mats.vampireCrimson.clone(), sharedUniforms, {
+    rimColor: 0xef4444,
+    rimStrength: 0.38,
+    celBands: 3.0,
+  });
+  const skinMat = applyPs2GothicShader(mats.vampireSkin.clone(), sharedUniforms, {
+    rimColor: 0xa5b4fc,
+    rimStrength: 0.3,
+    celBands: 3.0,
+  });
+  const brassMat = applyPs2GothicShader(mats.brass.clone(), sharedUniforms, {
+    rimColor: 0xffcf87,
+    rimStrength: 0.34,
+    celBands: 3.0,
+  });
+  const clawMat = applyPs2GothicShader(
+    new THREE.MeshStandardMaterial({
+      color: 0x7f1d1d,
+      emissive: 0x991b1b,
+      emissiveIntensity: 0.42,
+      roughness: 0.32,
+      metalness: 0.25,
+    }),
+    sharedUniforms,
+    { rimColor: 0xf87171, rimStrength: 0.45, celBands: 3.0 },
+  );
+
+  const fpMats = [coatMat, crimsonMat, skinMat, brassMat, clawMat];
+  const stealthMatDefaults = fpMats.map((mat) => ({
+    mat,
+    baseColor: mat.color.getHex(),
+  }));
+  for (const m of fpMats) {
+    m.transparent = true;
+    m.opacity = 1.0;
+  }
+
+  // Oriented in camera-local space (-Z forward, +Y up, +X right)
+  const sleeveGeo = new THREE.CylinderGeometry(0.044, 0.056, 0.26, 8);
+  sleeveGeo.rotateX(Math.PI / 2);
+
+  const cuffFlairGeo = new THREE.CylinderGeometry(0.05, 0.046, 0.075, 8);
+  cuffFlairGeo.rotateX(Math.PI / 2);
+
+  const innerRuffleGeo = new THREE.CylinderGeometry(0.041, 0.041, 0.025, 8);
+  innerRuffleGeo.rotateX(Math.PI / 2);
+
+  const wristGeo = new THREE.CylinderGeometry(0.026, 0.03, 0.055, 7);
+  wristGeo.rotateX(Math.PI / 2);
+
+  const palmGeo = new THREE.BoxGeometry(0.058, 0.024, 0.074);
+  const fingerGeo = new THREE.CapsuleGeometry(0.0085, 0.032, 2, 5);
+  fingerGeo.rotateX(Math.PI / 2);
+  const clawTipGeo = new THREE.ConeGeometry(0.008, 0.052, 4);
+  clawTipGeo.rotateX(-Math.PI / 2);
+  const cufflinkGeo = new THREE.OctahedronGeometry(0.0095, 0);
+
+  const buildHand = (side: -1 | 1) => {
+    const armGroup = new THREE.Group();
+    const forearmGroup = new THREE.Group();
+    armGroup.add(forearmGroup);
+
+    // Tailored dark Victorian frock sleeve
+    const sleeve = new THREE.Mesh(sleeveGeo, coatMat);
+    sleeve.position.set(0, 0, -0.04);
+    forearmGroup.add(sleeve);
+
+    // Folded crimson silk cuff + pale subtle inner linen trim + antique brass cufflink
+    const cuff = new THREE.Mesh(cuffFlairGeo, crimsonMat);
+    cuff.position.set(0, 0.002, -0.175);
+    const innerTrim = new THREE.Mesh(innerRuffleGeo, skinMat);
+    innerTrim.position.set(0, 0.002, -0.215);
+    const cufflink = new THREE.Mesh(cufflinkGeo, brassMat);
+    cufflink.position.set(side * 0.047, 0.004, -0.18);
+    forearmGroup.add(cuff, innerTrim, cufflink);
+
+    // Slender wrist & aristocrat palm tilted slightly inward like a predator
+    const handGroup = new THREE.Group();
+    handGroup.position.set(0, 0.004, -0.245);
+    handGroup.rotation.z = side * -0.46;
+    handGroup.rotation.x = 0.08;
+    forearmGroup.add(handGroup);
+
+    const wrist = new THREE.Mesh(wristGeo, skinMat);
+    wrist.position.set(0, 0, 0.015);
+    const palm = new THREE.Mesh(palmGeo, skinMat);
+    palm.position.set(0, 0, -0.036);
+    handGroup.add(wrist, palm);
+
+    // 4 articulated slender fingers + sharp crimson-tipped claws (3 prominent talon claws + pinky)
+    for (let f = 0; f < 4; f++) {
+      const xSpread = (f - 1.5) * 0.0145 * side;
+      const fingerPivot = new THREE.Group();
+      fingerPivot.position.set(xSpread, 0.002, -0.072);
+      fingerPivot.rotation.x = -0.26 - f * 0.04;
+      fingerPivot.rotation.y = side * (0.08 - f * 0.05);
+
+      const seg = new THREE.Mesh(fingerGeo, skinMat);
+      seg.position.set(0, -0.004, -0.02);
+      fingerPivot.add(seg);
+
+      const claw = new THREE.Mesh(clawTipGeo, clawMat);
+      claw.position.set(0, -0.008, -0.058);
+      claw.rotation.x = -0.24;
+      if (f === 3) claw.scale.setScalar(0.8);
+      fingerPivot.add(claw);
+
+      handGroup.add(fingerPivot);
+    }
+
+    // Opposable thumb on inner edge with curved talon
+    const thumbPivot = new THREE.Group();
+    thumbPivot.position.set(-side * 0.031, -0.006, -0.028);
+    thumbPivot.rotation.set(-0.22, -side * 0.42, side * 0.25);
+    const thumbSeg = new THREE.Mesh(fingerGeo, skinMat);
+    thumbSeg.scale.set(1.05, 1.05, 0.78);
+    thumbSeg.position.set(0, 0, -0.016);
+    const thumbClaw = new THREE.Mesh(clawTipGeo, clawMat);
+    thumbClaw.scale.setScalar(0.75);
+    thumbClaw.position.set(0, -0.004, -0.046);
+    thumbClaw.rotation.x = -0.2;
+    thumbPivot.add(thumbSeg, thumbClaw);
+    handGroup.add(thumbPivot);
+
+    return { armGroup, forearmGroup };
+  };
+
+  const left = buildHand(-1);
+  const right = buildHand(1);
+  left.armGroup.position.set(-0.24, -0.23, -0.18);
+  right.armGroup.position.set(0.24, -0.23, -0.18);
+
+  root.add(left.armGroup, right.armGroup);
+
+  return {
+    root,
+    leftArm: left.armGroup,
+    rightArm: right.armGroup,
+    leftForearm: left.forearmGroup,
+    rightForearm: right.forearmGroup,
     stealthMatDefaults,
   };
 }
@@ -407,11 +681,22 @@ export function createNpcModel(
   const coatMat = applyPs2GothicShader(
     new THREE.MeshStandardMaterial({
       color: coatColor,
-      roughness: archetype === 'noble' ? 0.52 : isCultist || isHunter ? 0.65 : 0.84,
-      metalness: hasGuardGear ? 0.28 : 0.05,
+      roughness: archetype === 'noble' ? 0.56 : isCultist || isHunter ? 0.68 : 0.86,
+      metalness: hasGuardGear ? 0.24 : 0.05,
     }),
     sharedUniforms,
     { rimColor: isCultist ? 0xa855f7 : isHunter ? 0xfb923c : isBodyguard ? 0xf87171 : 0x6b82b8, rimStrength: 0.28, celBands: 3.0, bloodPulseColor: pulseColor },
+  );
+
+  const coatSwayMat = applyPs2GothicShader(
+    new THREE.MeshStandardMaterial({
+      color: coatColor,
+      roughness: archetype === 'noble' ? 0.56 : isCultist || isHunter ? 0.68 : 0.86,
+      metalness: hasGuardGear ? 0.24 : 0.05,
+      side: THREE.DoubleSide,
+    }),
+    sharedUniforms,
+    { rimColor: isCultist ? 0xa855f7 : isHunter ? 0xfb923c : isBodyguard ? 0xf87171 : 0x6b82b8, rimStrength: 0.28, celBands: 3.0, bloodPulseColor: pulseColor, windSway: true },
   );
 
   const trimMat = applyPs2GothicShader(
@@ -422,6 +707,16 @@ export function createNpcModel(
     }),
     sharedUniforms,
     { rimColor: 0x94a3b8, rimStrength: 0.25, celBands: 3.0, bloodPulseColor: pulseColor },
+  );
+
+  const darkBootMat = applyPs2GothicShader(
+    new THREE.MeshStandardMaterial({
+      color: 0x161820,
+      roughness: 0.42,
+      metalness: 0.35,
+    }),
+    sharedUniforms,
+    { rimColor: 0x64748b, rimStrength: 0.2, celBands: 3.0, bloodPulseColor: pulseColor },
   );
 
   const skinMat = applyPs2GothicShader(
@@ -443,138 +738,213 @@ export function createNpcModel(
     bodyGroup.scale.set(0.96, 1.0, 0.96);
   }
 
-  // Legs
-  const legGeo = new THREE.CylinderGeometry(0.095, 0.075, 0.84, 6);
-  const leftLeg = new THREE.Mesh(legGeo, coatMat);
-  leftLeg.position.set(-0.13, 0.42, 0);
-  leftLeg.castShadow = true;
-  const rightLeg = new THREE.Mesh(legGeo, coatMat);
-  rightLeg.position.set(0.13, 0.42, 0);
-  rightLeg.castShadow = true;
+  // Faceted Low-Poly Capsule Legs pivoted at Hip (y=0.84) with Boot Shafts & +Z Boots
+  const legGeo = new THREE.CapsuleGeometry(0.082, 0.44, 2, 7);
+  legGeo.translate(0, -0.32, 0);
+  const bootShaftGeo = new THREE.CylinderGeometry(0.088, 0.074, 0.24, 7);
+  const bootFootGeo = new THREE.BoxGeometry(0.125, 0.095, 0.22);
+
+  const makeNpcLeg = (xOff: number) => {
+    const legMesh = new THREE.Mesh(legGeo, coatMat);
+    legMesh.position.set(xOff, 0.84, 0);
+    legMesh.castShadow = true;
+
+    const bootShaft = new THREE.Mesh(bootShaftGeo, darkBootMat);
+    bootShaft.position.set(0, -0.64, 0);
+    const bootFoot = new THREE.Mesh(bootFootGeo, darkBootMat);
+    bootFoot.position.set(0, -0.78, 0.042);
+    legMesh.add(bootShaft, bootFoot);
+    return legMesh;
+  };
+
+  const leftLeg = makeNpcLeg(-0.125);
+  const rightLeg = makeNpcLeg(0.125);
   bodyGroup.add(leftLeg, rightLeg);
 
-  // Torso (Countess gets flared noble gown, Cultist full ritual cassock, Blacksmith/Bodyguard broader chest, Beggar stooped)
+  // Faceted Capsule Torso + Layered Victorian Clothing
+  const torsoRadius = isBlacksmith || isHalberdier || isBodyguard || isHunter ? 0.245 : 0.21;
   const torso = isCountess
-    ? new THREE.Mesh(new THREE.CylinderGeometry(0.19, 0.42, 1.15, 8), coatMat)
+    ? new THREE.Mesh(new THREE.CylinderGeometry(0.175, 0.42, 1.08, 8, 2), coatMat)
     : isCultist
-    ? new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.36, 1.05, 8), coatMat)
-    : new THREE.Mesh(
-        new THREE.CylinderGeometry(isBlacksmith || isHalberdier || isBodyguard || isHunter ? 0.28 : 0.24, 0.28, 0.76, 7),
-        coatMat,
-      );
-  torso.position.y = isCountess || isCultist ? 0.98 : 1.2;
+    ? new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.35, 0.96, 8, 2), coatMat)
+    : new THREE.Mesh(new THREE.CapsuleGeometry(torsoRadius, 0.46, 2, 7), coatMat);
+  torso.scale.set(1.0, 1.0, 0.86);
+  torso.position.y = isCountess || isCultist ? 0.96 : 1.18;
   if (isBeggarRole) torso.rotation.x = 0.16;
   torso.castShadow = true;
   bodyGroup.add(torso);
 
-  // Secondary Silhouettes & Status Vestments
+  // Subtle Victorian Collar & Waist Belt Layer shared across silhouettes
+  if (!isBeggarRole) {
+    const baseBelt = new THREE.Mesh(new THREE.CylinderGeometry(torsoRadius * 0.96, torsoRadius * 0.98, 0.07, 7), darkBootMat);
+    baseBelt.scale.set(1.0, 1.0, 0.88);
+    baseBelt.position.y = 0.91;
+    const baseCollar = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.155, 0.185, 0.12, 7, 1, true, Math.PI * 0.18, Math.PI * 1.64),
+      coatMat,
+    );
+    baseCollar.position.set(0, 1.56, -0.01);
+    bodyGroup.add(baseBelt, baseCollar);
+  }
+
+  // Secondary Silhouettes & Layered Victorian Vestments
   if (isHunter) {
-    // Long Victorian hunter trenchcoat + silver stake bandolier + high collar
-    const coatSkirt = new THREE.Mesh(new THREE.CylinderGeometry(0.27, 0.38, 0.72, 7, 1, true), coatMat);
-    coatSkirt.position.y = 0.76;
-    const bandolier = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.74, 0.46), trimMat);
+    // Long Victorian hunter trenchcoat skirt with windSway + silver stake bandolier + high collar
+    const coatSkirtGeo = new THREE.CylinderGeometry(0.22, 0.34, 0.68, 8, 3, true, Math.PI * 0.15, Math.PI * 1.7);
+    coatSkirtGeo.translate(0, -0.34, 0);
+    const coatSkirt = new THREE.Mesh(coatSkirtGeo, coatSwayMat);
+    coatSkirt.position.y = 0.96;
+    const bandolier = new THREE.Mesh(new THREE.CylinderGeometry(0.25, 0.25, 0.08, 7), trimMat);
     bandolier.position.set(0, 1.24, 0);
-    bandolier.rotation.z = 0.46;
-    const stakeGeo = new THREE.CylinderGeometry(0.018, 0.008, 0.22, 5);
+    bandolier.rotation.z = 0.56;
+    const stakeGeo = new THREE.CylinderGeometry(0.016, 0.008, 0.22, 5);
     for (let s = -1; s <= 1; s++) {
       const stake = new THREE.Mesh(stakeGeo, trimMat);
-      stake.position.set(s * 0.08, 1.24 + s * 0.05, 0.24);
-      stake.rotation.z = -0.3;
+      stake.position.set(s * 0.075, 1.24 + s * 0.045, 0.22);
+      stake.rotation.z = -0.32;
       bodyGroup.add(stake);
     }
-    const hunterCollar = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.22, 0.18, 7, 1, true, Math.PI * 0.3, Math.PI * 1.4), coatMat);
-    hunterCollar.position.set(0, 1.56, -0.02);
+    const hunterCollar = new THREE.Mesh(new THREE.CylinderGeometry(0.21, 0.2, 0.18, 7, 1, true, Math.PI * 0.28, Math.PI * 1.44), coatMat);
+    hunterCollar.position.set(0, 1.58, -0.02);
     bodyGroup.add(coatSkirt, bandolier, hunterCollar);
   } else if (isBodyguard) {
-    const breastplate = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.25, 0.54, 7), trimMat);
-    breastplate.position.y = 1.32;
+    const breastplate = new THREE.Mesh(new THREE.CapsuleGeometry(0.26, 0.32, 2, 7), trimMat);
+    breastplate.scale.set(1.02, 1.0, 0.88);
+    breastplate.position.y = 1.26;
     breastplate.castShadow = true;
-    const pGeo = new THREE.SphereGeometry(0.18, 6, 5, 0, Math.PI * 2, 0, Math.PI * 0.65);
+    const pGeo = new THREE.SphereGeometry(0.15, 6, 5, 0, Math.PI * 2, 0, Math.PI * 0.6);
     const pL = new THREE.Mesh(pGeo, trimMat);
-    pL.position.set(-0.34, 1.54, 0);
+    pL.position.set(-0.31, 1.5, 0);
     const pR = new THREE.Mesh(pGeo, trimMat);
-    pR.position.set(0.34, 1.54, 0);
-    const capelet = new THREE.Mesh(new THREE.BoxGeometry(0.48, 0.66, 0.12), coatMat);
-    capelet.position.set(0, 1.22, -0.24);
+    pR.position.set(0.31, 1.5, 0);
+    const capeletGeo = new THREE.CylinderGeometry(0.24, 0.34, 0.58, 7, 2, true, Math.PI * 0.45, Math.PI * 1.1);
+    capeletGeo.translate(0, -0.29, 0);
+    const capelet = new THREE.Mesh(capeletGeo, coatSwayMat);
+    capelet.position.set(0, 1.52, -0.04);
     bodyGroup.add(breastplate, pL, pR, capelet);
   } else if (isCultist) {
-    const stole = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.78, 0.46), trimMat);
+    const stole = new THREE.Mesh(new THREE.CylinderGeometry(0.19, 0.25, 0.64, 7, 1, true, -0.28, 0.56), trimMat);
     stole.position.y = 1.2;
     const talisman = new THREE.Mesh(
-      new THREE.OctahedronGeometry(0.08, 0),
-      new THREE.MeshBasicMaterial({ color: 0xa855f7 }),
+      new THREE.OctahedronGeometry(0.075, 0),
+      new THREE.MeshBasicMaterial({ color: isApothecary ? 0x34d399 : 0xa855f7 }),
     );
-    talisman.position.set(0, 1.38, 0.27);
-    const shoulderShawl = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.38, 0.28, 7), coatMat);
-    shoulderShawl.position.y = 1.48;
+    talisman.position.set(0, 1.38, 0.23);
+    const shoulderShawl = new THREE.Mesh(new THREE.CylinderGeometry(0.23, 0.35, 0.28, 7), coatMat);
+    shoulderShawl.position.y = 1.47;
     bodyGroup.add(stole, talisman, shoulderShawl);
   } else if (isBeggarRole) {
-    const shawl = new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.34, 0.3, 6), trimMat);
-    shawl.position.set(0, 1.44, 0.03);
+    const shawl = new THREE.Mesh(new THREE.CylinderGeometry(0.23, 0.32, 0.3, 6), trimMat);
+    shawl.position.set(0, 1.42, 0.03);
     shawl.rotation.x = 0.16;
-    bodyGroup.add(shawl);
+    const tatteredHemGeo = new THREE.CylinderGeometry(0.22, 0.28, 0.36, 7, 2, true, Math.PI * 0.2, Math.PI * 1.6);
+    tatteredHemGeo.translate(0, -0.18, 0);
+    const tatteredHem = new THREE.Mesh(tatteredHemGeo, coatSwayMat);
+    tatteredHem.position.y = 0.96;
+    bodyGroup.add(shawl, tatteredHem);
   } else if (isHalberdier) {
-    const breastplate = new THREE.Mesh(new THREE.CylinderGeometry(0.29, 0.24, 0.52, 7), trimMat);
-    breastplate.position.y = 1.32;
+    const breastplate = new THREE.Mesh(new THREE.CapsuleGeometry(0.25, 0.3, 2, 7), trimMat);
+    breastplate.scale.set(1.02, 1.0, 0.88);
+    breastplate.position.y = 1.26;
     breastplate.castShadow = true;
-    const pGeo = new THREE.SphereGeometry(0.17, 6, 5, 0, Math.PI * 2, 0, Math.PI * 0.65);
+    const pGeo = new THREE.SphereGeometry(0.145, 6, 5, 0, Math.PI * 2, 0, Math.PI * 0.6);
     const pL = new THREE.Mesh(pGeo, trimMat);
-    pL.position.set(-0.33, 1.52, 0);
+    pL.position.set(-0.3, 1.49, 0);
     const pR = new THREE.Mesh(pGeo, trimMat);
-    pR.position.set(0.33, 1.52, 0);
+    pR.position.set(0.3, 1.49, 0);
     bodyGroup.add(breastplate, pL, pR);
   } else if (isInquisitor) {
-    const mantle = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.44, 0.36, 7), trimMat);
-    mantle.position.y = 1.46;
-    const chestCross = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.36, 0.46), trimMat);
-    chestCross.position.y = 1.28;
-    bodyGroup.add(mantle, chestCross);
+    const mantle = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.39, 0.32, 7), trimMat);
+    mantle.position.y = 1.44;
+    const coatSkirtGeo = new THREE.CylinderGeometry(0.21, 0.3, 0.56, 7, 2, true, Math.PI * 0.16, Math.PI * 1.68);
+    coatSkirtGeo.translate(0, -0.28, 0);
+    const coatSkirt = new THREE.Mesh(coatSkirtGeo, coatSwayMat);
+    coatSkirt.position.y = 0.94;
+    const chestCross = new THREE.Mesh(new THREE.OctahedronGeometry(0.065, 0), trimMat);
+    chestCross.position.set(0, 1.32, 0.22);
+    bodyGroup.add(mantle, coatSkirt, chestCross);
   } else if (isSentinel) {
-    const tabard = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.76, 0.46), trimMat);
-    tabard.position.y = 1.18;
+    const tabard = new THREE.Mesh(new THREE.CylinderGeometry(0.215, 0.25, 0.68, 7, 1, true, -0.35, 0.7), trimMat);
+    tabard.position.y = 1.14;
     bodyGroup.add(tabard);
   } else if (archetype === 'guard') {
-    const breastplate = new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.22, 0.44, 7), trimMat);
-    breastplate.position.y = 1.32;
-    breastplate.castShadow = true;
-    bodyGroup.add(breastplate);
+    // Victorian Constable Frock Coat Skirt + Brass Buckle + Waist Belt
+    const coatSkirtGeo = new THREE.CylinderGeometry(0.21, 0.27, 0.42, 7, 2, true, Math.PI * 0.14, Math.PI * 1.72);
+    coatSkirtGeo.translate(0, -0.21, 0);
+    const coatSkirt = new THREE.Mesh(coatSkirtGeo, coatMat);
+    coatSkirt.position.y = 0.94;
+    const chestPlastron = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.2, 0.36, 7, 1, true, -0.42, 0.84), trimMat);
+    chestPlastron.position.set(0, 1.28, 0.01);
+    const buckle = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.06, 0.035), trimMat);
+    buckle.position.set(0, 0.91, 0.21);
+    bodyGroup.add(coatSkirt, chestPlastron, buckle);
   } else if (isPatriarch) {
-    const capelet = new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.44, 0.52, 8), coatMat);
-    capelet.position.set(0, 1.38, -0.05);
-    const goldSash = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.68, 0.48), trimMat);
-    goldSash.position.y = 1.24;
-    const collar = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.2, 0.22, 7, 1, true, Math.PI * 0.35, Math.PI * 1.3), trimMat);
-    collar.position.set(0, 1.62, -0.04);
-    bodyGroup.add(capelet, goldSash, collar);
+    const capeletGeo = new THREE.CylinderGeometry(0.24, 0.38, 0.44, 8, 2, true, Math.PI * 0.35, Math.PI * 1.3);
+    capeletGeo.translate(0, -0.22, 0);
+    const capelet = new THREE.Mesh(capeletGeo, coatSwayMat);
+    capelet.position.set(0, 1.54, -0.02);
+    const waistcoat = new THREE.Mesh(new THREE.CapsuleGeometry(0.18, 0.32, 2, 7), trimMat);
+    waistcoat.scale.set(0.86, 1.0, 0.8);
+    waistcoat.position.set(0, 1.2, 0.04);
+    const coatSkirtGeo = new THREE.CylinderGeometry(0.21, 0.3, 0.56, 8, 2, true, Math.PI * 0.15, Math.PI * 1.7);
+    coatSkirtGeo.translate(0, -0.28, 0);
+    const coatSkirt = new THREE.Mesh(coatSkirtGeo, coatSwayMat);
+    coatSkirt.position.y = 0.94;
+    bodyGroup.add(capelet, waistcoat, coatSkirt);
   } else if (isCountess) {
-    const goldNeck = new THREE.Mesh(new THREE.TorusGeometry(0.17, 0.032, 6, 12), trimMat);
+    const goldNeck = new THREE.Mesh(new THREE.TorusGeometry(0.15, 0.028, 5, 10), trimMat);
     goldNeck.rotation.x = Math.PI / 2;
-    goldNeck.position.y = 1.56;
-    const bustle = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.34, 0.22), trimMat);
-    bustle.position.set(0, 0.94, -0.2);
-    bodyGroup.add(goldNeck, bustle);
+    goldNeck.position.y = 1.55;
+    const bustle = new THREE.Mesh(new THREE.CapsuleGeometry(0.15, 0.16, 2, 6), trimMat);
+    bustle.scale.set(1.2, 1.0, 0.75);
+    bustle.position.set(0, 0.96, -0.18);
+    const laceCollar = new THREE.Mesh(new THREE.CylinderGeometry(0.19, 0.27, 0.16, 8), trimMat);
+    laceCollar.position.y = 1.44;
+    bodyGroup.add(goldNeck, bustle, laceCollar);
   } else if (isMagistrate) {
-    const robe = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.38, 0.95, 8), coatMat);
-    robe.position.y = 0.75;
-    const jabot = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.34, 0.12), trimMat);
-    jabot.position.set(0, 1.44, 0.22);
+    const robeGeo = new THREE.CylinderGeometry(0.22, 0.36, 0.86, 8, 3, true, Math.PI * 0.12, Math.PI * 1.76);
+    robeGeo.translate(0, -0.43, 0);
+    const robe = new THREE.Mesh(robeGeo, coatSwayMat);
+    robe.position.y = 1.06;
+    const jabot = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.24, 5), trimMat);
+    jabot.rotation.x = Math.PI;
+    jabot.position.set(0, 1.42, 0.2);
     bodyGroup.add(robe, jabot);
   } else if (archetype === 'noble') {
-    const sash = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.65, 0.48), trimMat);
-    sash.position.y = 1.24;
-    const capelet = new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.38, 0.32, 7), coatMat);
-    capelet.position.y = 1.46;
-    bodyGroup.add(sash, capelet);
+    const waistcoat = new THREE.Mesh(new THREE.CapsuleGeometry(0.18, 0.32, 2, 7), trimMat);
+    waistcoat.scale.set(0.84, 1.0, 0.78);
+    waistcoat.position.set(0, 1.2, 0.04);
+    const coatSkirtGeo = new THREE.CylinderGeometry(0.2, 0.29, 0.52, 8, 2, true, Math.PI * 0.15, Math.PI * 1.7);
+    coatSkirtGeo.translate(0, -0.26, 0);
+    const coatSkirt = new THREE.Mesh(coatSkirtGeo, coatSwayMat);
+    coatSkirt.position.y = 0.94;
+    const capelet = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.34, 0.24, 7), coatMat);
+    capelet.position.y = 1.48;
+    bodyGroup.add(waistcoat, coatSkirt, capelet);
   } else if (isApothecary) {
-    const satchel = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.24, 0.22), trimMat);
-    satchel.position.set(-0.28, 1.0, 0.06);
-    const vial = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.18, 6), new THREE.MeshBasicMaterial({ color: 0x34d399 }));
-    vial.position.set(-0.32, 1.15, 0.12);
-    bodyGroup.add(satchel, vial);
+    const coatSkirtGeo = new THREE.CylinderGeometry(0.2, 0.28, 0.44, 7, 2, true, Math.PI * 0.14, Math.PI * 1.72);
+    coatSkirtGeo.translate(0, -0.22, 0);
+    const coatSkirt = new THREE.Mesh(coatSkirtGeo, coatMat);
+    coatSkirt.position.y = 0.94;
+    const satchel = new THREE.Mesh(new THREE.CapsuleGeometry(0.09, 0.14, 2, 6), trimMat);
+    satchel.position.set(-0.24, 0.98, 0.06);
+    const vial = new THREE.Mesh(new THREE.CylinderGeometry(0.042, 0.042, 0.16, 6), new THREE.MeshBasicMaterial({ color: 0x34d399 }));
+    vial.position.set(-0.28, 1.12, 0.11);
+    bodyGroup.add(coatSkirt, satchel, vial);
   } else if (isBlacksmith) {
-    const apron = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.82, 0.1), trimMat);
-    apron.position.set(0, 1.05, 0.24);
+    const apron = new THREE.Mesh(new THREE.CylinderGeometry(0.23, 0.28, 0.68, 7, 1, true, -0.55, 1.1), trimMat);
+    apron.position.set(0, 1.04, 0.02);
     bodyGroup.add(apron);
+  } else {
+    // Citizen layered Victorian waistcoat + short coat tail
+    const vest = new THREE.Mesh(new THREE.CapsuleGeometry(0.18, 0.3, 2, 7), trimMat);
+    vest.scale.set(0.84, 1.0, 0.78);
+    vest.position.set(0, 1.18, 0.03);
+    const coatSkirtGeo = new THREE.CylinderGeometry(0.2, 0.26, 0.36, 7, 2, true, Math.PI * 0.15, Math.PI * 1.7);
+    coatSkirtGeo.translate(0, -0.18, 0);
+    const coatSkirt = new THREE.Mesh(coatSkirtGeo, coatMat);
+    coatSkirt.position.y = 0.94;
+    bodyGroup.add(vest, coatSkirt);
   }
 
   // Head
@@ -583,106 +953,170 @@ export function createNpcModel(
   head.castShadow = true;
   bodyGroup.add(head);
 
-  // Hats / Helmets / Hoods by status & role
+  // Hats / Helmets / Hoods with clear front-facing (+Z) directional silhouettes
   if (isHunter) {
-    // Wide-brimmed gothic witch-hunter hat with silver buckle
+    // Wide-brimmed gothic witch-hunter hat with silver front buckle & forward peak
     const brim = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.44, 0.045, 8), coatMat);
-    brim.position.y = 1.85;
+    brim.position.set(0, 1.85, 0.03);
+    brim.rotation.x = 0.08;
     const crown = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.21, 0.34, 8), coatMat);
     crown.position.y = 2.02;
-    const buckle = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.09, 0.06), trimMat);
-    buckle.position.set(0, 1.9, 0.21);
-    bodyGroup.add(brim, crown, buckle);
+    const buckle = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.1, 0.06), trimMat);
+    buckle.position.set(0, 1.9, 0.22);
+    const frontMask = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.09, 0.08), coatMat);
+    frontMask.position.set(0, 1.66, 0.15);
+    bodyGroup.add(brim, crown, buckle, frontMask);
   } else if (isBodyguard) {
     const helm = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.22, 0.28, 8), trimMat);
     helm.position.y = 1.8;
-    const visor = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.1, 0.22), coatMat);
-    visor.position.set(0, 1.74, 0.11);
+    const visor = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.09, 0.22), coatMat);
+    visor.position.set(0, 1.74, 0.15);
+    visor.rotation.x = 0.18;
     const plume = new THREE.Mesh(new THREE.ConeGeometry(0.07, 0.34, 5), coatMat);
-    plume.position.set(0, 2.02, -0.04);
+    plume.position.set(0, 2.02, -0.05);
+    plume.rotation.x = -0.22;
     bodyGroup.add(helm, visor, plume);
   } else if (isCultist) {
-    const cowl = new THREE.Mesh(new THREE.ConeGeometry(0.26, 0.56, 7), coatMat);
-    cowl.position.set(0, 1.92, -0.02);
-    cowl.rotation.x = -0.18;
-    const eyeMat = new THREE.MeshBasicMaterial({ color: 0xc084fc });
-    const eyeL = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.02, 0.03), eyeMat);
-    eyeL.position.set(-0.055, 1.73, 0.15);
-    const eyeR = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.02, 0.03), eyeMat);
-    eyeR.position.set(0.055, 1.73, 0.15);
-    bodyGroup.add(cowl, eyeL, eyeR);
+    // Open ritual hood (capuz aberto) revealing shadowed front face & brow sigil
+    const hoodBack = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.23, 0.27, 0.36, 8, 1, true, Math.PI * 0.25, Math.PI * 1.5),
+      coatMat,
+    );
+    hoodBack.position.set(0, 1.77, -0.03);
+    const hoodPeak = new THREE.Mesh(new THREE.ConeGeometry(0.23, 0.4, 6), coatMat);
+    hoodPeak.position.set(0, 1.98, -0.07);
+    hoodPeak.rotation.x = -0.38;
+    const hoodArch = new THREE.Mesh(
+      new THREE.TorusGeometry(0.185, 0.036, 5, 8, Math.PI * 1.15),
+      trimMat,
+    );
+    hoodArch.position.set(0, 1.74, 0.13);
+    hoodArch.rotation.x = 0.18;
+    const eyeMat = new THREE.MeshBasicMaterial({ color: name === 'Boticário' ? 0x34d399 : 0xc084fc });
+    const eyeL = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.022, 0.04), eyeMat);
+    eyeL.position.set(-0.055, 1.73, 0.16);
+    const eyeR = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.022, 0.04), eyeMat);
+    eyeR.position.set(0.055, 1.73, 0.16);
+    bodyGroup.add(hoodBack, hoodPeak, hoodArch, eyeL, eyeR);
   } else if (isHalberdier) {
-    // Iron Sallet Visor Helmet
+    // Iron Sallet Visor Helmet with protruding front nasal/visor peak
     const helm = new THREE.Mesh(new THREE.SphereGeometry(0.22, 8, 6), trimMat);
     helm.position.y = 1.78;
-    const visor = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.09, 0.24), trimMat);
-    visor.position.set(0, 1.74, 0.1);
-    bodyGroup.add(helm, visor);
+    const visor = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.08, 0.24), trimMat);
+    visor.position.set(0, 1.76, 0.15);
+    visor.rotation.x = 0.16;
+    const slit = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.035, 0.04), coatMat);
+    slit.position.set(0, 1.72, 0.24);
+    bodyGroup.add(helm, visor, slit);
   } else if (isSentinel) {
-    // Tall Bronze-crested Tower Helm
+    // Tall Bronze-crested Tower Helm with front visor peak
     const helm = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.21, 0.26, 7), trimMat);
     helm.position.y = 1.82;
     const crest = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.22, 0.34), coatMat);
-    crest.position.y = 1.98;
-    bodyGroup.add(helm, crest);
+    crest.position.set(0, 1.98, 0.02);
+    const frontPeak = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.05, 0.16), trimMat);
+    frontPeak.position.set(0, 1.75, 0.16);
+    frontPeak.rotation.x = 0.2;
+    bodyGroup.add(helm, crest, frontPeak);
   } else if (isInquisitor) {
-    // Tall Pointed Inquisitor Hat with silver band
+    // Tall Pointed Inquisitor Hat with silver front clasp & forward brim dip
     const brim = new THREE.Mesh(new THREE.CylinderGeometry(0.39, 0.41, 0.04, 8), coatMat);
-    brim.position.y = 1.85;
+    brim.position.set(0, 1.85, 0.02);
+    brim.rotation.x = 0.08;
     const crown = new THREE.Mesh(new THREE.ConeGeometry(0.21, 0.42, 7), coatMat);
     crown.position.y = 2.04;
     const band = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.06, 7), trimMat);
     band.position.y = 1.88;
-    bodyGroup.add(brim, crown, band);
+    const clasp = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.1, 0.05), trimMat);
+    clasp.position.set(0, 1.9, 0.21);
+    bodyGroup.add(brim, crown, band, clasp);
   } else if (archetype === 'guard') {
-    const brim = new THREE.Mesh(new THREE.CylinderGeometry(0.38, 0.4, 0.04, 8), coatMat);
-    brim.position.y = 1.84;
-    const crown = new THREE.Mesh(new THREE.ConeGeometry(0.2, 0.3, 7), coatMat);
-    crown.position.y = 1.98;
-    bodyGroup.add(brim, crown);
+    // Victorian Constable Police Helmet with protruding front visor (capacete policial com pala)
+    const dome = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.21, 0.28, 8), coatMat);
+    dome.position.y = 1.91;
+    const comb = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.075, 0.26), trimMat);
+    comb.position.set(0, 2.06, -0.01);
+    const frontPala = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.036, 0.19), coatMat);
+    frontPala.position.set(0, 1.78, 0.16);
+    frontPala.rotation.x = 0.24;
+    const frontBadge = new THREE.Mesh(new THREE.BoxGeometry(0.085, 0.1, 0.045), trimMat);
+    frontBadge.position.set(0, 1.88, 0.2);
+    const rearGuard = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.045, 0.08), coatMat);
+    rearGuard.position.set(0, 1.76, -0.17);
+    bodyGroup.add(dome, comb, frontPala, frontBadge, rearGuard);
   } else if (isCountess) {
-    // Feathered Noble Fascinator / Tiara
+    // Feathered Noble Fascinator + Front Diadem & Monocle/Lace Crest
     const tiara = new THREE.Mesh(new THREE.TorusGeometry(0.16, 0.03, 6, 10, Math.PI), trimMat);
-    tiara.position.set(0, 1.84, 0.06);
+    tiara.position.set(0, 1.84, 0.08);
+    const jewel = new THREE.Mesh(new THREE.OctahedronGeometry(0.055, 0), trimMat);
+    jewel.position.set(0, 1.88, 0.18);
     const plume = new THREE.Mesh(new THREE.ConeGeometry(0.07, 0.32, 5), trimMat);
-    plume.position.set(0.12, 1.96, -0.02);
-    plume.rotation.z = -0.55;
-    bodyGroup.add(tiara, plume);
+    plume.position.set(0.12, 1.96, -0.05);
+    plume.rotation.set(-0.25, 0, -0.55);
+    bodyGroup.add(tiara, jewel, plume);
   } else if (isMagistrate) {
-    // Bicorne Judicial Cap
-    const bicorne = new THREE.Mesh(new THREE.BoxGeometry(0.54, 0.18, 0.22), coatMat);
-    bicorne.position.y = 1.89;
-    const badge = new THREE.Mesh(new THREE.OctahedronGeometry(0.06, 0), trimMat);
-    badge.position.set(0, 1.9, 0.12);
-    bodyGroup.add(bicorne, badge);
+    // Tall Judicial Top Hat (Cartola) with front crimson cockade
+    const brim = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 0.032, 8), coatMat);
+    brim.position.set(0, 1.84, 0.02);
+    brim.rotation.x = 0.06;
+    const hat = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.17, 0.34, 8), coatMat);
+    hat.position.y = 2.01;
+    const cockade = new THREE.Mesh(new THREE.OctahedronGeometry(0.065, 0), trimMat);
+    cockade.position.set(0, 1.91, 0.19);
+    bodyGroup.add(brim, hat, cockade);
   } else if (archetype === 'noble') {
-    const brim = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.28, 0.03, 8), coatMat);
-    brim.position.y = 1.84;
-    const hat = new THREE.Mesh(new THREE.CylinderGeometry(0.17, 0.18, isPatriarch ? 0.34 : 0.28, 8), coatMat);
-    hat.position.y = isPatriarch ? 2.01 : 1.98;
-    const band = new THREE.Mesh(new THREE.CylinderGeometry(0.185, 0.185, 0.05, 8), trimMat);
+    // Victorian Top Hat (Cartola) with forward brim dip, gold front buckle & monocle
+    const brim = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 0.032, 8), coatMat);
+    brim.position.set(0, 1.84, 0.02);
+    brim.rotation.x = 0.08;
+    const hat = new THREE.Mesh(new THREE.CylinderGeometry(0.205, 0.17, isPatriarch ? 0.38 : 0.33, 8), coatMat);
+    hat.position.y = isPatriarch ? 2.03 : 2.0;
+    const band = new THREE.Mesh(new THREE.CylinderGeometry(0.182, 0.182, 0.055, 8), trimMat);
     band.position.y = 1.88;
-    bodyGroup.add(brim, hat, band);
+    const frontClasp = new THREE.Mesh(new THREE.BoxGeometry(0.085, 0.07, 0.04), trimMat);
+    frontClasp.position.set(0, 1.88, 0.19);
+    const monocle = new THREE.Mesh(new THREE.TorusGeometry(0.042, 0.01, 5, 8), trimMat);
+    monocle.position.set(0.06, 1.74, 0.17);
+    bodyGroup.add(brim, hat, band, frontClasp, monocle);
     if (isPatriarch) {
       const feather = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.28, 5), trimMat);
-      feather.position.set(-0.18, 2.06, -0.02);
-      feather.rotation.z = 0.45;
+      feather.position.set(-0.18, 2.06, -0.04);
+      feather.rotation.set(-0.2, 0, 0.45);
       bodyGroup.add(feather);
     }
+  } else if (isBeggarRole) {
+    // Tattered open hood with forward cowl peak
+    const hood = new THREE.Mesh(new THREE.ConeGeometry(0.22, 0.32, 6), coatMat);
+    hood.position.set(0, 1.8, 0.02);
+    hood.rotation.x = -0.22;
+    const peak = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.04, 0.14), trimMat);
+    peak.position.set(0, 1.8, 0.16);
+    peak.rotation.x = 0.24;
+    bodyGroup.add(hood, peak);
   } else {
-    // Citizen / Beggar ragged hood
-    const hood = new THREE.Mesh(new THREE.ConeGeometry(0.22, 0.3, 6), coatMat);
-    hood.position.set(0, 1.78, isBeggarRole ? 0.04 : -0.04);
-    hood.rotation.x = -0.25;
-    bodyGroup.add(hood);
+    // Citizen Victorian peaked cap (quepe com pala frontal)
+    const capCrown = new THREE.Mesh(new THREE.CylinderGeometry(0.19, 0.2, 0.14, 7), coatMat);
+    capCrown.position.set(0, 1.84, -0.01);
+    const capBill = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.032, 0.16), trimMat);
+    capBill.position.set(0, 1.79, 0.15);
+    capBill.rotation.x = 0.2;
+    bodyGroup.add(capCrown, capBill);
   }
 
-  // Left arm (+ citizen pilgrim staff / beggar crutch)
+  // Left arm (faceted capsule + Victorian cuff + hand + pilgrim staff / beggar crutch)
+  const npcArmGeo = new THREE.CapsuleGeometry(0.062, 0.42, 2, 6);
+  const npcCuffGeo = new THREE.CylinderGeometry(0.072, 0.078, 0.11, 7);
+  const npcHandGeo = new THREE.OctahedronGeometry(0.048, 0);
+
   const leftArm = new THREE.Group();
-  leftArm.position.set(-0.3, 1.48, 0);
-  const leftArmMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.06, 0.62, 6), coatMat);
-  leftArmMesh.position.y = -0.28;
-  leftArm.add(leftArmMesh);
+  leftArm.position.set(-0.275, 1.48, 0);
+  const leftArmMesh = new THREE.Mesh(npcArmGeo, coatMat);
+  leftArmMesh.position.y = -0.26;
+  const leftCuff = new THREE.Mesh(npcCuffGeo, trimMat);
+  leftCuff.position.y = -0.46;
+  const leftHand = new THREE.Mesh(npcHandGeo, skinMat);
+  leftHand.position.y = -0.54;
+  leftArm.add(leftArmMesh, leftCuff, leftHand);
   if (isPilgrim || isBeggarRole) {
     const staff = new THREE.Mesh(new THREE.CylinderGeometry(0.024, 0.02, 1.5, 5), trimMat);
     staff.position.set(-0.04, -0.6, 0.14);
@@ -691,12 +1125,16 @@ export function createNpcModel(
   }
   bodyGroup.add(leftArm);
 
-  // Right arm + prop (guard halberd/lantern, cultist censer, noble cane/scepter/fan, blacksmith hammer)
+  // Right arm (faceted capsule + Victorian cuff + hand + prop)
   const rightArm = new THREE.Group();
-  rightArm.position.set(0.3, 1.48, 0);
-  const armMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.06, 0.62, 6), coatMat);
-  armMesh.position.y = -0.28;
-  rightArm.add(armMesh);
+  rightArm.position.set(0.275, 1.48, 0);
+  const armMesh = new THREE.Mesh(npcArmGeo, coatMat);
+  armMesh.position.y = -0.26;
+  const rightCuff = new THREE.Mesh(npcCuffGeo, trimMat);
+  rightCuff.position.y = -0.46;
+  const rightHand = new THREE.Mesh(npcHandGeo, skinMat);
+  rightHand.position.y = -0.54;
+  rightArm.add(armMesh, rightCuff, rightHand);
 
   let lanternMat: THREE.MeshBasicMaterial | undefined;
   let visionCone: THREE.Mesh | undefined;
@@ -733,55 +1171,6 @@ export function createNpcModel(
     const lantern = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.2, 0.14), lanternMat);
     lantern.position.set(-0.14, -0.62, 0.24);
     leftArm.add(lantern);
-
-    // Dynamic local-XZ fan geometry centered along +Z (0..VISION_CONE_RAYS)
-    const vertCount = VISION_CONE_RAYS + 2;
-    const positions = new Float32Array(vertCount * 3);
-    const colors = new Float32Array(vertCount * 3);
-    const indices: number[] = [];
-
-    positions[0] = 0;
-    positions[1] = 0.06;
-    positions[2] = 0.15;
-    colors[0] = 1.0;
-    colors[1] = 1.0;
-    colors[2] = 1.0;
-
-    for (let i = 0; i <= VISION_CONE_RAYS; i++) {
-      const t = i / VISION_CONE_RAYS;
-      const a = -GUARD_HALF_FOV + t * (GUARD_HALF_FOV * 2);
-      const idx = (i + 1) * 3;
-      positions[idx] = Math.sin(a) * GUARD_VISION_RANGE;
-      positions[idx + 1] = 0.06;
-      positions[idx + 2] = Math.cos(a) * GUARD_VISION_RANGE;
-
-      const edgeFade = 1.0 - Math.pow(Math.abs(t - 0.5) * 2, 2.2) * 0.55;
-      colors[idx] = 0.52 * edgeFade;
-      colors[idx + 1] = 0.52 * edgeFade;
-      colors[idx + 2] = 0.52 * edgeFade;
-    }
-
-    for (let i = 1; i <= VISION_CONE_RAYS; i++) {
-      indices.push(0, i + 1, i);
-    }
-
-    visionConeGeo = new THREE.BufferGeometry();
-    visionConeGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    visionConeGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    visionConeGeo.setIndex(indices);
-
-    visionConeMat = new THREE.MeshBasicMaterial({
-      color: 0x60a5fa,
-      vertexColors: true,
-      transparent: true,
-      opacity: 0.26,
-      depthWrite: false,
-      side: THREE.DoubleSide,
-    });
-    visionCone = new THREE.Mesh(visionConeGeo, visionConeMat);
-    visionCone.frustumCulled = false;
-    visionCone.visible = false; // Shown cleanly on the ground when Sentido Carmesim is active
-    root.add(visionCone);
   } else if (isCultist) {
     // Handheld occult/alchemical lantern in leftArm + swinging censer in rightArm
     const isApothecary = name === 'Boticário';
@@ -830,6 +1219,60 @@ export function createNpcModel(
     rightArm.add(handle, headHammer);
   }
   bodyGroup.add(rightArm);
+
+  // Subtle ground vision cone for ALL NPCs (visible when sneaking, nearby, or Crimson Sense is active)
+  const coneHalfFov = hasGuardGear ? GUARD_HALF_FOV : Math.acos(0.42);
+  const coneDefaultRange = hasGuardGear ? GUARD_VISION_RANGE : isBeggarRole ? 6.5 : 9.5;
+  const vertCount = VISION_CONE_RAYS + 2;
+  const conePositions = new Float32Array(vertCount * 3);
+  const coneColors = new Float32Array(vertCount * 3);
+  const coneIndices: number[] = [];
+
+  conePositions[0] = 0;
+  conePositions[1] = 0.045;
+  conePositions[2] = 0.16;
+  coneColors[0] = 1.0;
+  coneColors[1] = 1.0;
+  coneColors[2] = 1.0;
+
+  for (let i = 0; i <= VISION_CONE_RAYS; i++) {
+    const t = i / VISION_CONE_RAYS;
+    const a = -coneHalfFov + t * (coneHalfFov * 2);
+    const idx = (i + 1) * 3;
+    conePositions[idx] = Math.sin(a) * coneDefaultRange;
+    conePositions[idx + 1] = 0.045;
+    conePositions[idx + 2] = Math.cos(a) * coneDefaultRange;
+
+    const edgeFade = 1.0 - Math.pow(Math.abs(t - 0.5) * 2, 2.0) * 0.65;
+    coneColors[idx] = 0.34 * edgeFade;
+    coneColors[idx + 1] = 0.34 * edgeFade;
+    coneColors[idx + 2] = 0.34 * edgeFade;
+  }
+
+  for (let i = 1; i <= VISION_CONE_RAYS; i++) {
+    coneIndices.push(0, i + 1, i);
+  }
+
+  visionConeGeo = new THREE.BufferGeometry();
+  visionConeGeo.setAttribute('position', new THREE.BufferAttribute(conePositions, 3));
+  visionConeGeo.setAttribute('color', new THREE.BufferAttribute(coneColors, 3));
+  visionConeGeo.setIndex(coneIndices);
+
+  visionConeMat = new THREE.MeshBasicMaterial({
+    color: 0x60a5fa,
+    vertexColors: true,
+    transparent: true,
+    opacity: 0.16,
+    depthWrite: false,
+    polygonOffset: true,
+    polygonOffsetFactor: -1,
+    polygonOffsetUnits: -1,
+    side: THREE.DoubleSide,
+  });
+  visionCone = new THREE.Mesh(visionConeGeo, visionConeMat);
+  visionCone.frustumCulled = false;
+  visionCone.visible = false;
+  root.add(visionCone);
 
   // Overhead diegetic Eye Visibility billboard marker
   const alertMat = new THREE.MeshBasicMaterial({
@@ -2146,3 +2589,301 @@ export function createVampireCoffin(mats: GothicMaterialLibrary): THREE.Group {
 
   return group;
 }
+
+export function createAlleyClutterCluster(
+  mats: GothicMaterialLibrary,
+  variant: 0 | 1 | 2 = 0,
+): THREE.Group {
+  const group = new THREE.Group();
+
+  if (variant === 0) {
+    // Stacked timber cargo crates + iron-banded barrel + leaning drainage pipe
+    const crateA = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.85, 0.95), mats.wood);
+    crateA.position.set(-0.38, 0.425, 0);
+    crateA.castShadow = true;
+    crateA.receiveShadow = true;
+
+    const crateB = new THREE.Mesh(new THREE.BoxGeometry(0.72, 0.68, 0.72), mats.wood);
+    crateB.position.set(-0.34, 1.19, 0.04);
+    crateB.rotation.y = 0.24;
+    crateB.castShadow = true;
+    crateB.receiveShadow = true;
+
+    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.36, 0.32, 0.92, 8), mats.treeBark);
+    barrel.position.set(0.48, 0.46, 0.08);
+    barrel.castShadow = true;
+    barrel.receiveShadow = true;
+
+    const hoop = new THREE.Mesh(new THREE.TorusGeometry(0.36, 0.028, 5, 10), mats.iron);
+    hoop.rotation.x = Math.PI / 2;
+    hoop.position.set(0.48, 0.68, 0.08);
+
+    const pipe = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 1.55, 6), mats.iron);
+    pipe.position.set(0.06, 0.72, -0.34);
+    pipe.rotation.z = 0.22;
+    pipe.castShadow = true;
+
+    group.add(crateA, crateB, barrel, hoop, pipe);
+  } else if (variant === 1) {
+    // Low pallet + bundled sacks + weathered crate + leaning timber plank
+    const pallet = new THREE.Mesh(new THREE.BoxGeometry(1.75, 0.14, 1.05), mats.treeBark);
+    pallet.position.set(0, 0.07, 0);
+    pallet.receiveShadow = true;
+
+    const crate = new THREE.Mesh(new THREE.BoxGeometry(0.88, 0.78, 0.82), mats.wood);
+    crate.position.set(-0.36, 0.53, 0);
+    crate.castShadow = true;
+    crate.receiveShadow = true;
+
+    const sackA = new THREE.Mesh(new THREE.DodecahedronGeometry(0.34, 0), mats.darkStone);
+    sackA.scale.set(1.1, 0.85, 0.95);
+    sackA.position.set(0.42, 0.36, 0.08);
+    sackA.castShadow = true;
+
+    const sackB = new THREE.Mesh(new THREE.DodecahedronGeometry(0.28, 0), mats.roof);
+    sackB.scale.set(1.0, 0.78, 1.1);
+    sackB.position.set(0.32, 0.68, -0.1);
+    sackB.castShadow = true;
+
+    const plank = new THREE.Mesh(new THREE.BoxGeometry(0.22, 1.35, 0.06), mats.wood);
+    plank.position.set(-0.84, 0.64, 0.14);
+    plank.rotation.z = -0.26;
+    plank.castShadow = true;
+
+    group.add(pallet, crate, sackA, sackB, plank);
+  } else {
+    // Industrial cast-iron utility pipes + stone block + small supply chest
+    const slab = new THREE.Mesh(new THREE.BoxGeometry(1.65, 0.18, 0.92), mats.darkStone);
+    slab.position.set(0, 0.09, 0);
+    slab.receiveShadow = true;
+
+    [-0.52, -0.24].forEach((px, idx) => {
+      const conduit = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.1, 2.2 - idx * 0.45, 6), mats.iron);
+      conduit.position.set(px, (2.2 - idx * 0.45) * 0.5 + 0.18, -0.22);
+      conduit.castShadow = true;
+      group.add(conduit);
+    });
+
+    const chest = new THREE.Mesh(new THREE.BoxGeometry(0.88, 0.56, 0.62), mats.wood);
+    chest.position.set(0.32, 0.46, 0.05);
+    chest.castShadow = true;
+    chest.receiveShadow = true;
+
+    const band = new THREE.Mesh(new THREE.BoxGeometry(0.92, 0.08, 0.65), mats.iron);
+    band.position.set(0.32, 0.68, 0.05);
+
+    group.add(slab, chest, band);
+  }
+
+  return group;
+}
+
+export function createVictorianStreetFurniture(
+  mats: GothicMaterialLibrary,
+  variant: 'bench' | 'kiosk' | 'planter',
+): THREE.Group {
+  const group = new THREE.Group();
+
+  if (variant === 'bench') {
+    const seat = new THREE.Mesh(new THREE.BoxGeometry(1.85, 0.1, 0.54), mats.wood);
+    seat.position.set(0, 0.46, 0);
+    seat.castShadow = true;
+    seat.receiveShadow = true;
+
+    const back = new THREE.Mesh(new THREE.BoxGeometry(1.85, 0.44, 0.08), mats.wood);
+    back.position.set(0, 0.78, -0.22);
+    back.rotation.x = -0.14;
+    back.castShadow = true;
+
+    [-0.78, 0.78].forEach((lx) => {
+      const legF = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.46, 0.48), mats.iron);
+      legF.position.set(lx, 0.23, 0);
+      legF.castShadow = true;
+      const arm = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.22, 0.48), mats.iron);
+      arm.position.set(lx, 0.58, -0.02);
+      group.add(legF, arm);
+    });
+    group.add(seat, back);
+  } else if (variant === 'kiosk') {
+    // Victorian newsstand / apothecary kiosk with glowing warm vitrine & peaked roof
+    const plinth = new THREE.Mesh(new THREE.BoxGeometry(2.15, 0.24, 1.35), mats.darkStone);
+    plinth.position.y = 0.12;
+    plinth.receiveShadow = true;
+
+    const body = new THREE.Mesh(new THREE.BoxGeometry(1.9, 2.05, 1.12), mats.wood);
+    body.position.y = 1.26;
+    body.castShadow = true;
+    body.receiveShadow = true;
+
+    const windowPane = new THREE.Mesh(new THREE.PlaneGeometry(1.38, 1.05), mats.vitrine);
+    windowPane.position.set(0, 1.48, 0.57);
+
+    const counter = new THREE.Mesh(new THREE.BoxGeometry(1.62, 0.1, 0.34), mats.darkStone);
+    counter.position.set(0, 0.92, 0.66);
+
+    const awning = new THREE.Mesh(new THREE.BoxGeometry(1.96, 0.1, 0.72), mats.clothCrimson);
+    awning.position.set(0, 2.15, 0.74);
+    awning.rotation.x = 0.34;
+
+    const roof = new THREE.Mesh(new THREE.ConeGeometry(1.52, 0.95, 4), mats.roof);
+    roof.position.y = 2.75;
+    roof.rotation.y = Math.PI / 4;
+    roof.scale.set(1.15, 1, 0.78);
+    roof.castShadow = true;
+
+    const finial = new THREE.Mesh(new THREE.OctahedronGeometry(0.11, 0), mats.brass);
+    finial.position.y = 3.28;
+
+    group.add(plinth, body, windowPane, counter, awning, roof, finial);
+  } else {
+    // Stone Victorian street planter with trimmed evergreen hedge
+    const trough = new THREE.Mesh(new THREE.BoxGeometry(1.65, 0.52, 0.85), mats.darkStone);
+    trough.position.y = 0.26;
+    trough.castShadow = true;
+    trough.receiveShadow = true;
+
+    const rim = new THREE.Mesh(new THREE.BoxGeometry(1.76, 0.1, 0.96), mats.stone);
+    rim.position.y = 0.54;
+
+    const hedge = new THREE.Mesh(new THREE.BoxGeometry(1.42, 0.56, 0.62), mats.hedge);
+    hedge.position.y = 0.82;
+    hedge.castShadow = true;
+
+    [-0.78, 0.78].forEach((bx) => {
+      const knob = new THREE.Mesh(new THREE.OctahedronGeometry(0.08, 0), mats.brass);
+      knob.position.set(bx, 0.62, 0.42);
+      group.add(knob);
+    });
+
+    group.add(trough, rim, hedge);
+  }
+
+  return group;
+}
+
+export function createCemeteryMonument(
+  mats: GothicMaterialLibrary,
+  variant: 'obelisk' | 'urn' | 'shrine' = 'obelisk',
+): THREE.Group {
+  const group = new THREE.Group();
+
+  if (variant === 'obelisk') {
+    const base = new THREE.Mesh(new THREE.BoxGeometry(1.55, 0.36, 1.55), mats.darkStone);
+    base.position.y = 0.18;
+    base.castShadow = true;
+    base.receiveShadow = true;
+
+    const plinth = new THREE.Mesh(new THREE.BoxGeometry(1.12, 0.72, 1.12), mats.stone);
+    plinth.position.y = 0.72;
+    plinth.castShadow = true;
+
+    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.44, 2.35, 4), mats.stone);
+    shaft.position.y = 2.25;
+    shaft.rotation.y = Math.PI / 4;
+    shaft.castShadow = true;
+
+    const cap = new THREE.Mesh(new THREE.ConeGeometry(0.32, 0.46, 4), mats.brass);
+    cap.position.y = 3.65;
+    cap.rotation.y = Math.PI / 4;
+
+    group.add(base, plinth, shaft, cap);
+  } else if (variant === 'urn') {
+    const plinth = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.32, 1.3), mats.darkStone);
+    plinth.position.y = 0.16;
+    plinth.receiveShadow = true;
+
+    const ped = new THREE.Mesh(new THREE.BoxGeometry(0.76, 0.92, 0.76), mats.stone);
+    ped.position.y = 0.78;
+    ped.castShadow = true;
+
+    const urnPoints = [
+      new THREE.Vector2(0.0, 0.0),
+      new THREE.Vector2(0.18, 0.0),
+      new THREE.Vector2(0.3, 0.34),
+      new THREE.Vector2(0.24, 0.62),
+      new THREE.Vector2(0.12, 0.78),
+      new THREE.Vector2(0.22, 0.92),
+    ];
+    const urn = new THREE.Mesh(new THREE.LatheGeometry(urnPoints, 10), mats.darkStone);
+    urn.position.y = 1.24;
+    urn.castShadow = true;
+
+    [
+      [-0.56, -0.56],
+      [0.56, -0.56],
+      [-0.56, 0.56],
+      [0.56, 0.56],
+    ].forEach(([px, pz]) => {
+      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.055, 0.68, 6), mats.iron);
+      post.position.set(px, 0.5, pz);
+      group.add(post);
+    });
+
+    group.add(plinth, ped, urn);
+  } else {
+    // Gothic stone memorial tabernacle shrine
+    const step = new THREE.Mesh(new THREE.BoxGeometry(1.65, 0.28, 1.35), mats.darkStone);
+    step.position.y = 0.14;
+    step.receiveShadow = true;
+
+    [-0.52, 0.52].forEach((cx) => {
+      const col = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.14, 1.65, 6), mats.stone);
+      col.position.set(cx, 1.1, 0);
+      col.castShadow = true;
+      group.add(col);
+    });
+
+    const slab = new THREE.Mesh(new THREE.BoxGeometry(1.42, 0.24, 1.05), mats.darkStone);
+    slab.position.y = 2.02;
+    slab.castShadow = true;
+
+    const gable = new THREE.Mesh(new THREE.ConeGeometry(0.92, 0.95, 4), mats.roof);
+    gable.position.y = 2.6;
+    gable.rotation.y = Math.PI / 4;
+    gable.castShadow = true;
+
+    const crossV = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.58, 0.1), mats.iron);
+    crossV.position.set(0, 1.12, 0);
+    const crossH = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.09, 0.09), mats.iron);
+    crossH.position.set(0, 1.24, 0);
+
+    group.add(step, slab, gable, crossV, crossH);
+  }
+
+  return group;
+}
+
+export function createThresholdBollards(
+  mats: GothicMaterialLibrary,
+  spanWidth: number,
+  accent: 'amber' | 'crimson' | 'iron' = 'amber',
+): THREE.Group {
+  const group = new THREE.Group();
+
+  // Flush walkable stone threshold curb marking district transition
+  const strip = new THREE.Mesh(new THREE.BoxGeometry(spanWidth, 0.04, 0.68), mats.darkStone);
+  strip.position.y = 0.02;
+  strip.receiveShadow = true;
+  group.add(strip);
+
+  const half = spanWidth / 2;
+  [-half, half].forEach((bx) => {
+    const base = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.3, 0.3, 6), mats.darkStone);
+    base.position.set(bx, 0.15, 0);
+    base.castShadow = true;
+
+    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.18, 0.88, 6), mats.iron);
+    post.position.set(bx, 0.74, 0);
+    post.castShadow = true;
+
+    const capMat =
+      accent === 'crimson' ? mats.vampireCrimson : accent === 'amber' ? mats.vitrine : mats.brass;
+    const cap = new THREE.Mesh(new THREE.OctahedronGeometry(0.12, 0), capMat);
+    cap.position.set(bx, 1.26, 0);
+
+    group.add(base, post, cap);
+  });
+
+  return group;
+}
+

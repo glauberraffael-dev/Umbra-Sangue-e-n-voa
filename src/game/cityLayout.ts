@@ -2,9 +2,11 @@ import * as THREE from 'three';
 import type { GothicMaterialLibrary } from './materials';
 import {
   createAlarmBell,
+  createAlleyClutterCluster,
   createBloodAltar,
   createBreakableProp,
   createCathedral,
+  createCemeteryMonument,
   createDeadTree,
   createDrapedCurtain,
   createFountain,
@@ -21,10 +23,12 @@ import {
   createStoneArchway,
   createStoneStaircase,
   createStreetLamp,
+  createThresholdBollards,
   createVampireCoffin,
   createVictorianBuilding,
   createVictorianCarriage,
   createVictorianManor,
+  createVictorianStreetFurniture,
   createWaterPuddle,
   createWroughtIronFence,
   type AlarmBellInstance,
@@ -65,6 +69,7 @@ export interface CityWorldData {
   coffinPos: THREE.Vector3;
   safeSpawnPos: THREE.Vector3;
   cryptBounds: { minX: number; maxX: number; minZ: number; maxZ: number };
+  cemeteryBounds: { minX: number; maxX: number; minZ: number; maxZ: number };
   altarGroup: THREE.Group;
   citizenRoutes: THREE.Vector3[][];
   beggarRoutes: THREE.Vector3[][];
@@ -123,22 +128,24 @@ export function buildGothicCity(
     const stepD = length / steps;
     for (let i = 0; i < steps; i++) {
       const topY = stepH * (i + 1);
-      const localZ = -length / 2 + stepD * (i + 0.5);
+      const isTopStep = i === steps - 1;
+      const topExtra = isTopStep ? 0.28 : 0;
+      const localZ = -length / 2 + stepD * (i + 0.5) + topExtra * 0.5;
       let sx = cx;
       let sz = cz;
       let sw = w;
-      let sd = stepD + 0.12;
+      let sd = stepD + 0.22 + topExtra;
       if (dir === 'south') {
         sz = cz + localZ;
       } else if (dir === 'north') {
         sz = cz - localZ;
       } else if (dir === 'east') {
         sx = cx + localZ;
-        sw = stepD + 0.12;
+        sw = stepD + 0.22 + topExtra;
         sd = w;
       } else {
         sx = cx - localZ;
-        sw = stepD + 0.12;
+        sw = stepD + 0.22 + topExtra;
         sd = w;
       }
       addVolume(sx, 0, topY, sz, sw, sd, false, true);
@@ -264,6 +271,90 @@ export function buildGothicCity(
     addVolume(ax, 5.4, 7.2, az, 10.6, 2.5, true, true);
   });
 
+  // Gothic Iron-and-Stone Transition Gateways framing sector entries cleanly without blocking routes
+  const addIronGateTransition = (
+    cx: number,
+    cz: number,
+    spanWidth: number,
+    height: number,
+    rotY: number,
+  ) => {
+    const gateGroup = new THREE.Group();
+    gateGroup.position.set(cx, 0, cz);
+    gateGroup.rotation.y = rotY;
+
+    const halfSpan = spanWidth / 2;
+    [-halfSpan, halfSpan].forEach((px) => {
+      const plinth = new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.55, 1.15), mats.darkStone);
+      plinth.position.set(px, 0.275, 0);
+      plinth.castShadow = true;
+      plinth.receiveShadow = true;
+      const shaft = new THREE.Mesh(new THREE.BoxGeometry(0.86, height - 0.55, 0.86), mats.stone);
+      shaft.position.set(px, 0.55 + (height - 0.55) / 2, 0);
+      shaft.castShadow = true;
+      shaft.receiveShadow = true;
+      const cap = new THREE.Mesh(new THREE.BoxGeometry(1.06, 0.26, 1.06), mats.darkStone);
+      cap.position.set(px, height + 0.13, 0);
+      const finial = new THREE.Mesh(new THREE.OctahedronGeometry(0.24, 0), mats.iron);
+      finial.position.set(px, height + 0.48, 0);
+      gateGroup.add(plinth, shaft, cap, finial);
+    });
+
+    const ironBeam = new THREE.Mesh(new THREE.BoxGeometry(spanWidth + 0.4, 0.18, 0.22), mats.iron);
+    ironBeam.position.set(0, height - 0.08, 0);
+    const ironCrest = new THREE.Mesh(new THREE.OctahedronGeometry(0.28, 0), mats.brass);
+    ironCrest.position.set(0, height + 0.24, 0);
+    gateGroup.add(ironBeam, ironCrest);
+    scene.add(gateGroup);
+
+    const isRotatedNS = Math.abs(Math.sin(rotY)) > 0.7;
+    [-halfSpan, halfSpan].forEach((px) => {
+      const worldX = cx + (isRotatedNS ? 0 : px);
+      const worldZ = cz + (isRotatedNS ? -px : 0);
+      addVolume(worldX, 0, height + 0.5, worldZ, 1.05, 1.05, true, false);
+    });
+  };
+
+  // Cemetery & Manor Wrought-Iron Gateways (aligned flush with fence gaps along x = 34.5)
+  addIronGateTransition(34.5, 0.0, 9.2, 4.3, Math.PI / 2);
+  addIronGateTransition(34.5, 25.0, 8.0, 4.3, Math.PI / 2);
+
+  // Alleyway Brick-and-Iron Gateways framing Becos e Vielas entrances along x = -16.5
+  addIronGateTransition(-16.5, 7.0, 7.4, 4.2, Math.PI / 2);
+  addIronGateTransition(-16.5, 25.0, 7.4, 4.2, Math.PI / 2);
+
+  // Cathedral <-> Avenue Threshold Piers (z = -23.0)
+  [-15.5, 15.5].forEach((px) => {
+    const pier = new THREE.Mesh(new THREE.BoxGeometry(0.95, 3.6, 0.95), mats.darkStone);
+    pier.position.set(px, 1.8, -23.0);
+    pier.castShadow = true;
+    pier.receiveShadow = true;
+    const cap = new THREE.Mesh(new THREE.ConeGeometry(0.68, 0.75, 4), mats.iron);
+    cap.position.set(px, 3.95, -23.0);
+    cap.rotation.y = Math.PI / 4;
+    scene.add(pier, cap);
+    addVolume(px, 0, 4.1, -23.0, 0.95, 0.95, true, false);
+  });
+
+  // Visual Threshold Bollards & Stone Aprons bridging all 4 city sectors
+  const sectorThresholds: Array<[number, number, number, number, 'amber' | 'crimson' | 'iron']> = [
+    [0, -23.0, 14.5, 0, 'amber'],                  // Adro da Catedral <-> Avenida Vitoriana
+    [-25.0, -24.0, 7.6, 0, 'iron'],                // Adro da Catedral <-> Becos Oeste
+    [40.0, -24.0, 7.6, 0, 'iron'],                 // Adro da Catedral <-> Cemitério Leste
+    [-16.5, 7.0, 6.2, Math.PI / 2, 'amber'],       // Avenida <-> Becos (Passagem Norte)
+    [-16.5, 25.0, 6.2, Math.PI / 2, 'amber'],      // Avenida <-> Becos (Passagem Sul)
+    [34.5, 0.0, 7.4, Math.PI / 2, 'crimson'],      // Avenida <-> Cemitério (Portão Norte)
+    [34.5, 25.0, 6.4, Math.PI / 2, 'crimson'],     // Avenida <-> Cemitério (Portão Sul)
+    [-18.0, 45.0, 7.6, 0, 'amber'],                // Avenida Sul <-> Becos Oeste
+    [22.0, 45.0, 7.6, 0, 'amber'],                 // Avenida Sul <-> Avenida Leste
+  ];
+  sectorThresholds.forEach(([tx, tz, span, rotY, accent]) => {
+    const threshold = createThresholdBollards(mats, span, accent);
+    threshold.position.set(tx, 0, tz);
+    threshold.rotation.y = rotY;
+    scene.add(threshold);
+  });
+
   // =========================================================================
   // SECTOR 2 & 3 SHARED SPINE: FOUNTAIN PLAZA & SKYBRIDGES
   // =========================================================================
@@ -328,6 +419,11 @@ export function buildGothicCity(
     { x: -66, z: -12, w: 11, h: 10.0, d: 12, brick: true, roofStyle: 'pitched' },
     { x: -66, z: 12, w: 10.5, h: 6.2, d: 12, roofDeckY: 6.2 },
     { x: -66, z: 34, w: 11, h: 10.5, d: 12, roofStyle: 'mansard' },
+
+    // Outer West Slum & Watchtower Row (x = -80, separated by x = -73 smuggling alley)
+    { x: -80, z: -12, w: 9.0, h: 7.8, d: 11, roofDeckY: 7.8 },
+    { x: -80, z: 12, w: 9.0, h: 4.6, d: 11, roofDeckY: 4.6 },
+    { x: -80, z: 34, w: 9.0, h: 10.2, d: 11, brick: true, hasBalcony: true, roofStyle: 'pitched' },
   ];
 
   alleyBuildings.forEach((b) => {
@@ -344,7 +440,7 @@ export function buildGothicCity(
       core.castShadow = true;
       core.receiveShadow = true;
       const win = new THREE.Mesh(new THREE.PlaneGeometry(1.2, 2.2), mats.stainedGlass);
-      win.position.set(b.x, 2.8, b.z + b.d / 2 - 0.1);
+      win.position.set(b.x, Math.min(2.8, b.roofDeckY - 1.4), b.z + b.d / 2 - 0.1);
       scene.add(plinth, core, win);
       addVolume(b.x, 0, b.roofDeckY, b.z, b.w, b.d, true, true);
       shadowZones.push({ x: b.x, y: b.roofDeckY, z: b.z, radius: b.w * 0.55 });
@@ -361,55 +457,120 @@ export function buildGothicCity(
     }
   });
 
-  // Interconnected Alley Rooftop Catwalks (y = 6.2m)
-  const westRoofCatwalk = createGothicPlatform(4.2, 6.2, 8.4, mats, { withRailings: true, pillars: false });
-  westRoofCatwalk.position.set(-21, 0, 7.0);
-  scene.add(westRoofCatwalk);
-  addVolume(-21, 5.65, 6.2, 7.0, 4.2, 8.4, false, true);
+  // Interconnected Alley Rooftop Catwalks, Stepped Balconies & High Ambush Overlooks
+  const addElevatedWalkway = (
+    cx: number,
+    height: number,
+    cz: number,
+    w: number,
+    d: number,
+    options: { withRailings?: boolean; pillars?: boolean } = {},
+  ) => {
+    const plat = createGothicPlatform(w, height, d, mats, {
+      withRailings: options.withRailings ?? false,
+      pillars: options.pillars ?? false,
+    });
+    plat.position.set(cx, 0, cz);
+    scene.add(plat);
+    addVolume(cx, height - 0.55, height, cz, w, d, false, true);
+  };
 
-  const midAlleyBridge = createGothicPlatform(12.5, 6.2, 4.2, mats, { withRailings: false, pillars: true });
-  midAlleyBridge.position.set(-31.5, 0, 11.5);
-  scene.add(midAlleyBridge);
-  addVolume(-31.5, 5.65, 6.2, 11.5, 12.5, 4.2, false, true);
+  addElevatedWalkway(-21, 6.2, 7.0, 4.2, 8.4, { withRailings: true });
+  addElevatedWalkway(-31.5, 6.2, 11.5, 12.5, 4.2, { pillars: true });
   shadowZones.push({ x: -31.5, y: 0, z: 11.5, radius: 5.2 });
 
-  const farAlleyBridge = createGothicPlatform(14.5, 6.2, 4.2, mats, { withRailings: false, pillars: true });
-  farAlleyBridge.position.set(-54.0, 0, 11.0);
-  scene.add(farAlleyBridge);
-  addVolume(-54.0, 5.65, 6.2, 11.0, 14.5, 4.2, false, true);
+  addElevatedWalkway(-54.0, 6.2, 11.0, 14.5, 4.2, { pillars: true });
   shadowZones.push({ x: -54.0, y: 0, z: 11.0, radius: 5.2 });
 
-  // Climbable Alley Crates & Scaffolding Steps flush against flat roofs
-  const scaffoldSpots: Array<[number, number, number, number]> = [
-    [-26.5, 14.5, 0, 1.4],
-    [-48.3, 10.0, Math.PI, 1.4],
-    [-59.5, 12.0, 0, -1.4],
-    [25.6, -2.0, Math.PI, -1.4],
-    [25.6, 16.0, Math.PI, -1.4],
+  // Far-West x = -73 stepped aerial network (4.6m -> 5.4m -> 6.2m and 4.6m -> 5.6m -> 6.7m -> 7.8m)
+  addElevatedWalkway(-73.4, 4.6, 12.0, 7.2, 3.6, { withRailings: false });
+  addElevatedWalkway(-70.2, 5.4, 12.0, 2.8, 3.6, { withRailings: false });
+  addElevatedWalkway(-80.0, 5.6, 3.2, 4.4, 6.6, { withRailings: true });
+  addElevatedWalkway(-80.0, 6.7, -3.2, 4.4, 6.6, { withRailings: true });
+  shadowZones.push({ x: -80.0, y: 7.8, z: -12.0, radius: 5.5 });
+
+  // Low-altitude Alley Ambush Beams (y = 3.2m, clear of ground patrol routes)
+  addElevatedWalkway(-31.5, 3.2, 26.0, 12.0, 2.8, { withRailings: false });
+  addElevatedWalkway(-54.0, 3.2, 24.5, 13.8, 2.8, { withRailings: false });
+
+  // High Observation Perches (y = 7.0m, 7.3m, 7.8m, 8.4m)
+  addElevatedWalkway(-21.0, 7.3, 22.8, 4.2, 3.6, { withRailings: true });
+  addElevatedWalkway(-21.0, 8.4, 26.8, 5.8, 4.6, { withRailings: true });
+  addElevatedWalkway(-42.0, 7.0, 3.0, 4.6, 4.0, { withRailings: true });
+  addElevatedWalkway(-42.0, 7.8, -0.5, 6.4, 4.4, { withRailings: true });
+
+  // Cantilevered Street-Facing Ambush Balconies overlooking Avenida Vitoriana
+  addElevatedWalkway(-15.2, 4.6, -2.0, 3.4, 6.4, { withRailings: true });
+  addElevatedWalkway(-15.2, 3.2, 16.0, 3.4, 6.4, { withRailings: true });
+  addElevatedWalkway(14.5, 4.6, -2.0, 3.4, 6.4, { withRailings: true });
+  addElevatedWalkway(14.5, 3.2, 16.0, 3.4, 6.4, { withRailings: true });
+  addElevatedWalkway(20.5, 7.3, 22.8, 4.2, 3.6, { withRailings: true });
+  addElevatedWalkway(20.5, 7.8, 26.8, 5.6, 4.4, { withRailings: true });
+
+  // Climbable Alley Crates & Two-Stage Scaffolding Steps flush OUTSIDE flat-roof colliders (zero edge snagging)
+  // Step progression: ground (0m) -> crate1 (1.5m) -> crate2 (2.9m) -> midDeck (3.45m) -> upperStep (5.05m) -> roof (6.2m)
+  const scaffoldSpots: Array<{
+    sx: number;
+    sz: number;
+    rot: number;
+    px: number;
+    pz: number;
+    midX: number;
+    midZ: number;
+  }> = [
+    // West Alley inner roof (-21, 16, minX=-25.25)
+    { sx: -26.8, sz: 13.0, rot: 0, midX: -26.55, midZ: 14.5, px: -26.55, pz: 16.5 },
+    // Mid Alley roof (-42, 10, minX=-47.0)
+    { sx: -48.55, sz: 7.0, rot: 0, midX: -48.3, midZ: 8.5, px: -48.3, pz: 10.5 },
+    // Far Alley roof (-66, 12, maxX=-60.75)
+    { sx: -59.2, sz: 9.0, rot: Math.PI, midX: -59.45, midZ: 10.5, px: -59.45, pz: 12.5 },
+    // East Avenue roof (20.5, -2, maxX=25.0)
+    { sx: 26.55, sz: -4.8, rot: Math.PI, midX: 26.3, midZ: -3.2, px: 26.3, pz: -1.2 },
+    // East Avenue roof (20.5, 16, maxX=25.0)
+    { sx: 26.55, sz: 13.2, rot: Math.PI, midX: 26.3, midZ: 14.8, px: 26.3, pz: 16.8 },
+    // Far West x = -80 mid-deck access (y = 4.6m)
+    { sx: -75.0, sz: 18.8, rot: 0, midX: -76.5, midZ: 19.0, px: -78.8, pz: 19.0 },
+    // North Cloister West & East flat roofs (-54, -48) and (54, -48) (south face maxZ=-42.5)
+    { sx: -51.4, sz: -40.95, rot: 0, midX: -52.8, midZ: -41.2, px: -54.8, pz: -41.2 },
+    { sx: 51.4, sz: -40.95, rot: Math.PI, midX: 52.8, midZ: -41.2, px: 54.8, pz: -41.2 },
   ];
-  scaffoldSpots.forEach(([sx, sz, rot, stepOffsetX]) => {
+  scaffoldSpots.forEach(({ sx, sz, rot, midX, midZ, px, pz }) => {
     const stack = createScaffoldingStack(mats);
     stack.position.set(sx, 0, sz);
     stack.rotation.y = rot;
     scene.add(stack);
     addVolume(sx, 0, 1.5, sz, 2.2, 2.2, false, true);
-    addVolume(sx + (rot === 0 ? 0.25 : -0.25), 1.5, 2.9, sz, 1.6, 1.6, false, true);
+    addVolume(sx + (rot === 0 ? 0.25 : -0.25), 1.5, 2.9, sz, 1.65, 1.65, false, true);
 
-    const stepPlatform = createGothicPlatform(2.6, 4.6, 2.6, mats, { withRailings: false, pillars: true });
-    const px = sx + stepOffsetX;
-    stepPlatform.position.set(px, 0, sz + 2.1);
-    scene.add(stepPlatform);
-    addVolume(px, 4.05, 4.6, sz + 2.1, 2.6, 2.6, false, true);
+    const midPlatform = createGothicPlatform(2.2, 3.45, 2.2, mats, { withRailings: false, pillars: true });
+    midPlatform.position.set(midX, 0, midZ);
+    scene.add(midPlatform);
+    addVolume(midX, 2.9, 3.45, midZ, 2.2, 2.2, false, true);
+
+    const upperPlatform = createGothicPlatform(2.6, 5.05, 2.8, mats, { withRailings: false, pillars: true });
+    upperPlatform.position.set(px, 0, pz);
+    scene.add(upperPlatform);
+    addVolume(px, 4.5, 5.05, pz, 2.6, 2.8, false, true);
   });
 
-  // Steaming Sewer Grates in Becos e Vielas & Avenida Vitoriana
+  // Steaming Sewer Grates in Becos e Vielas, Avenida Vitoriana & Sector Transitions
   const sewerSpots: Array<[number, number]> = [
     [-31.0, 22.0],
     [-31.0, -4.0],
     [-54.0, 2.0],
     [-54.0, 26.0],
+    [-73.0, -6.0],
+    [-73.0, 6.0],
+    [-73.0, 24.0],
+    [-42.0, 20.0],
+    [-42.0, -21.0],
     [10.2, 18.0],
     [-10.2, 34.0],
+    [-25.0, -20.5],
+    [-16.0, 7.0],
+    [-16.0, 25.0],
+    [33.5, 0.0],
+    [0.0, 44.5],
   ];
   sewerSpots.forEach(([gx, gz]) => {
     const grate = createSewerGrate(mats);
@@ -418,10 +579,119 @@ export function buildGothicCity(
     smokeSources.push(new THREE.Vector3(gx, 0.25, gz));
   });
 
-  // Small isolated rain puddles (the ONLY specular ground spots, keeping cobblestones matte)
+  // Thief-Style Alley Cargo Clusters & Line-of-Sight Flank Alcoves (strictly hugging walls off patrol lanes)
+  const alleyClutterSpecs: Array<[number, number, number, 0 | 1 | 2, boolean]> = [
+    [-36.1, -8.0, Math.PI / 2, 0, false],
+    [-36.1, 10.0, Math.PI / 2, 1, false],
+    [-36.1, 23.0, Math.PI / 2, 0, true],   // Climbable flank crate corner
+    [-36.1, 30.0, Math.PI / 2, 2, false],
+    [-26.3, -3.5, -Math.PI / 2, 1, false],
+    [-26.3, 34.0, -Math.PI / 2, 0, false],
+    [-59.6, -12.0, Math.PI / 2, 2, false],
+    [-59.6, 22.0, Math.PI / 2, 0, true],   // Climbable flank crate corner
+    [-59.6, 34.0, Math.PI / 2, 1, false],
+    [-72.8, -11.5, -Math.PI / 2, 0, false],
+    [-72.8, 12.0, -Math.PI / 2, 1, true],
+    [-72.8, 34.0, -Math.PI / 2, 2, false],
+    [-48.0, 41.2, 0, 1, false],            // South alley escape threshold clutter
+  ];
+  alleyClutterSpecs.forEach(([ax, az, rot, variant, climbable]) => {
+    const clutter = createAlleyClutterCluster(mats, variant);
+    clutter.position.set(ax, 0, az);
+    clutter.rotation.y = rot;
+    scene.add(clutter);
+    const isNS = Math.abs(Math.sin(rot)) > 0.7;
+    addVolume(
+      ax,
+      0,
+      climbable ? 1.45 : 1.35,
+      az,
+      isNS ? 1.15 : 1.95,
+      isNS ? 1.95 : 1.15,
+      true,
+      climbable,
+    );
+  });
+
+  // Western Alleyway Bypass Arches, Tight First-Person Overpasses & Semi-Enclosed Courtyards
+  const alleyArchSpecs: Array<[number, number, number, number, number, number]> = [
+    // Main alley bypasses
+    [-54.0, 39.2, 8.8, 4.8, 2.0, 0],
+    [-73.2, -24.0, 7.6, 4.8, 2.0, 0],
+    [-73.2, 41.4, 7.6, 4.8, 2.0, 0],
+    // First-person overhead framing arches along Becos e Vielas (piers tucked flush outside patrol lanes)
+    [-31.5, -9.5, 10.6, 4.1, 2.0, 0],
+    [-31.5, 3.2, 10.6, 4.1, 2.0, 0],
+    [-31.5, 20.0, 10.6, 4.1, 2.0, 0],
+    [-54.0, -7.5, 11.4, 4.2, 2.0, 0],
+    [-54.0, 19.5, 11.4, 4.2, 2.0, 0],
+    [-73.2, 1.5, 7.6, 4.1, 1.8, 0],
+    [-73.2, 24.5, 7.6, 4.1, 1.8, 0],
+    // Covered East-West Cross-Passage Arcades linking Avenue & Alleys (clear 4.7m floor path under y=6.2 catwalk)
+    [-21.0, 7.0, 7.4, 3.85, 2.4, Math.PI / 2],
+    [20.5, 7.0, 7.4, 3.85, 2.4, Math.PI / 2],
+  ];
+  alleyArchSpecs.forEach(([ax, az, aw, ah, ad, rot]) => {
+    const arch = createStoneArchway(aw, ah, ad, mats);
+    arch.position.set(ax, 0, az);
+    arch.rotation.y = rot;
+    scene.add(arch);
+    const pierOffset = aw * 0.5 - 0.75;
+    const isEW = Math.abs(Math.sin(rot)) > 0.7;
+    if (isEW) {
+      addVolume(ax, 0, ah + 0.4, az - pierOffset, ad, 1.5, true, false);
+      addVolume(ax, 0, ah + 0.4, az + pierOffset, ad, 1.5, true, false);
+      addVolume(ax, ah, ah + 1.35, az, ad + 0.1, aw, true, true);
+    } else {
+      addVolume(ax - pierOffset, 0, ah + 0.4, az, 1.5, ad, true, false);
+      addVolume(ax + pierOffset, 0, ah + 0.4, az, 1.5, ad, true, false);
+      addVolume(ax, ah, ah + 1.35, az, aw, ad + 0.1, true, true);
+    }
+  });
+
+  // Semi-Enclosed Courtyard 1: Pátio dos Cortiços (between (-42,10) and (-42,30), x in [-47..-37], z in [15.5..24.5])
+  const courtyardEntryFrames: Array<[number, number, number, number]> = [
+    [-46.6, 20.0, 7.8, 3.85],
+    [-37.4, 20.0, 7.8, 3.85],
+    [-46.2, 1.2, 6.4, 3.85],
+    [-37.8, 1.2, 6.4, 3.85],
+  ];
+  courtyardEntryFrames.forEach(([cx, cz, span, h]) => {
+    const gate = createStoneArchway(span, h, 1.4, mats);
+    gate.position.set(cx, 0, cz);
+    gate.rotation.y = Math.PI / 2;
+    scene.add(gate);
+    const off = span * 0.5 - 0.65;
+    addVolume(cx, 0, h + 0.35, cz - off, 1.4, 1.3, true, false);
+    addVolume(cx, 0, h + 0.35, cz + off, 1.4, 1.3, true, false);
+    addVolume(cx, h, h + 1.1, cz, 1.5, span, true, true);
+  });
+  // Overhead timber/stone courtyard gallery roofs framing sky view in first-person
+  addElevatedWalkway(-42.0, 4.2, 20.0, 8.6, 3.4, { withRailings: true });
+  addElevatedWalkway(-42.0, 4.0, 1.2, 8.0, 4.0, { withRailings: false });
+
+  shadowZones.push(
+    { x: -54.0, y: 0, z: 39.2, radius: 5.0 },
+    { x: -42.0, y: 0, z: 20.0, radius: 5.2 },
+    { x: -42.0, y: 0, z: 1.2, radius: 4.8 },
+    { x: -73.0, y: 0, z: -6.0, radius: 5.5 },
+    { x: -73.0, y: 0, z: 12.0, radius: 5.5 },
+    { x: -73.0, y: 0, z: 24.0, radius: 5.5 },
+    { x: -73.0, y: 0, z: 34.0, radius: 5.5 },
+  );
+
+  // Small isolated rain puddles (the ONLY specular ground spots, distributed cleanly across transitions)
   const puddleSpots: Array<[number, number, number]> = [
     [-4.8, -22.5, 1.45],
     [5.4, -21.0, 1.2],
+    [-24.5, -24.0, 1.4],
+    [39.5, -24.0, 1.45],
+    [-15.5, 7.0, 1.35],
+    [-15.5, 25.0, 1.4],
+    [34.5, 0.5, 1.45],
+    [34.5, 25.0, 1.35],
+    [-18.0, 45.5, 1.4],
+    [22.0, 45.5, 1.4],
     [-10.0, 4.5, 1.35],
     [10.1, 14.0, 1.55],
     [-6.4, 14.5, 1.25],
@@ -535,12 +805,12 @@ export function buildGothicCity(
   scene.add(eastRoofCatwalk);
   addVolume(20.5, 5.65, 6.2, 7.0, 4.2, 8.4, false, true);
 
-  // North Bridge -> Flat Roofs step-up landings (y = 4.6m)
-  [-12.6, 12.6].forEach((wx) => {
-    const sideLanding = createGothicPlatform(2.8, 4.6, 6.5, mats, { withRailings: false, pillars: true });
-    sideLanding.position.set(wx, 0, -7.8);
+  // North Bridge (y=4.0) -> Flat Roofs (y=6.2) flush step-up connectors (y = 5.05m)
+  [-15.35, 14.6].forEach((wx) => {
+    const sideLanding = createGothicPlatform(3.1, 5.05, 7.4, mats, { withRailings: false, pillars: true });
+    sideLanding.position.set(wx, 0, -8.5);
     scene.add(sideLanding);
-    addVolume(wx, 4.05, 4.6, -7.8, 2.8, 6.5, false, true);
+    addVolume(wx, 4.5, 5.05, -8.5, 3.1, 7.4, false, true);
   });
 
   // South Gatehouse Overpass Bridge (y = 4.2m, z = 60.0) + Flush Staircases
@@ -571,6 +841,46 @@ export function buildGothicCity(
     scene.add(car);
     const isEW = Math.abs(Math.sin(rot)) > 0.7;
     addVolume(cx, 0, 2.45, cz, isEW ? 3.5 : 2.3, isEW ? 2.3 : 3.5, true, true);
+  });
+
+  // Coherent Avenida Vitoriana Sidewalk Micro-Scenes (kiosks, benches & hedge planters off walk lanes)
+  const streetFurnitureSpecs: Array<['bench' | 'kiosk' | 'planter', number, number, number, number]> = [
+    // Central Fountain Square benches facing fountain
+    ['bench', -4.5, 0, 0.0, Math.PI / 2],
+    ['bench', 4.5, 0, 0.0, -Math.PI / 2],
+    // West & East Central raised sidewalks (y = 0.24, outer edges away from x = ±11.6..12.8 paths)
+    ['planter', -14.25, 0.24, -10.0, Math.PI / 2],
+    ['bench', -14.25, 0.24, 2.0, Math.PI / 2],
+    ['kiosk', -15.4, 0, 15.8, Math.PI / 2],
+    ['planter', -14.25, 0.24, 21.0, Math.PI / 2],
+    ['bench', -14.25, 0.24, 32.0, Math.PI / 2],
+    ['planter', 14.25, 0.24, -8.0, -Math.PI / 2],
+    ['bench', 14.25, 0.24, 6.0, -Math.PI / 2],
+    ['planter', 14.25, 0.24, 20.0, -Math.PI / 2],
+    ['bench', 14.25, 0.24, 32.0, -Math.PI / 2],
+    // Eastern Shopfront strip (between building east face x=25 and walk path x=27.5..28.5)
+    ['kiosk', 25.75, 0.24, 26.5, Math.PI / 2],
+    ['planter', 29.85, 0.24, 10.0, -Math.PI / 2],
+    // Southern Boulevard shopfront kiosks, benches & planters (z = 69.8..70.5, facing North)
+    ['kiosk', -36.0, 0.24, 70.15, Math.PI],
+    ['kiosk', 12.0, 0.24, 70.15, Math.PI],
+    ['kiosk', 38.0, 0.24, 70.15, Math.PI],
+    ['bench', -48.0, 0.24, 69.85, Math.PI],
+    ['planter', -24.0, 0.24, 69.85, Math.PI],
+    ['bench', -8.0, 0.24, 69.85, Math.PI],
+    ['planter', 24.0, 0.24, 69.85, Math.PI],
+    ['bench', 48.0, 0.24, 69.85, Math.PI],
+  ];
+  streetFurnitureSpecs.forEach(([variant, fx, fy, fz, rotY]) => {
+    const prop = createVictorianStreetFurniture(mats, variant);
+    prop.position.set(fx, fy, fz);
+    prop.rotation.y = rotY;
+    scene.add(prop);
+    const isNS = Math.abs(Math.sin(rotY)) > 0.7;
+    const w = variant === 'kiosk' ? 2.0 : 1.75;
+    const d = variant === 'kiosk' ? 1.25 : 0.75;
+    const h = variant === 'kiosk' ? 2.75 : 0.95;
+    addVolume(fx, fy, fy + h, fz, isNS ? d : w, isNS ? w : d, variant === 'kiosk', variant !== 'kiosk');
   });
 
   // =========================================================================
@@ -683,15 +993,43 @@ export function buildGothicCity(
   shadowZones.push({ x: cryptCx, y: -2.4, z: -44.0, radius: 11.0 });
 
   // =========================================================================
-  // SECTOR 4: CEMITÉRIO E MANSÃO (x in [34, 86], z in [-22, 44])
+  // SECTOR 4: CEMITÉRIO (ZONA SEGURA DE RESPIRO) E MANSÃO (x in [34, 86])
   // =========================================================================
-  // Secondary Crimson Blood Altar inside Cemetery Sector
+  const cemeteryBounds = { minX: 34.5, maxX: 57.5, minZ: -22.5, maxZ: 44.5 };
+
+  // Secondary Crimson Blood Altar inside Cemetery Safe Respite Sector + Semi-Enclosed Stone Cloister
   const altarPos = new THREE.Vector3(44, 0, 24);
   const altarGroup = createBloodAltar(mats);
   altarGroup.position.copy(altarPos);
   scene.add(altarGroup);
   addVolume(altarPos.x, 0, 1.5, altarPos.z, 4.2, 4.2, false, true);
   shadowZones.push({ x: altarPos.x, y: 0, z: altarPos.z, radius: 10.5 });
+
+  // Semi-enclosed Gothic stone cloister wings framing the Cemetery Altar Sanctuary (wide N/S/E/W entries)
+  const cloisterCorners: Array<[number, number]> = [
+    [altarPos.x - 5.2, altarPos.z - 5.2],
+    [altarPos.x + 5.2, altarPos.z - 5.2],
+    [altarPos.x - 5.2, altarPos.z + 5.2],
+    [altarPos.x + 5.2, altarPos.z + 5.2],
+  ];
+  cloisterCorners.forEach(([px, pz]) => {
+    const col = new THREE.Mesh(new THREE.BoxGeometry(1.1, 3.6, 1.1), mats.darkStone);
+    col.position.set(px, 1.8, pz);
+    col.castShadow = true;
+    col.receiveShadow = true;
+    const cap = new THREE.Mesh(new THREE.ConeGeometry(0.72, 0.85, 4), mats.stone);
+    cap.position.set(px, 4.0, pz);
+    cap.rotation.y = Math.PI / 4;
+    scene.add(col, cap);
+    addVolume(px, 0, 4.0, pz, 1.1, 1.1, true, false);
+  });
+  [-5.2, 5.2].forEach((ox) => {
+    const beam = new THREE.Mesh(new THREE.BoxGeometry(0.75, 0.65, 10.8), mats.stone);
+    beam.position.set(altarPos.x + ox, 3.45, altarPos.z);
+    beam.castShadow = true;
+    scene.add(beam);
+    addVolume(altarPos.x + ox, 3.1, 3.85, altarPos.z, 0.8, 10.8, true, true);
+  });
 
   // Gothic Mausoleums in Cemetery
   const mausoleumCoords: Array<[number, number, number]> = [
@@ -773,6 +1111,35 @@ export function buildGothicCity(
   gardenStair.position.set(63.0, 0, 26.2);
   scene.add(gardenStair);
   addStairVolumes(63.0, 26.2, 2.8, 4.0, 6.4, 8, 'north');
+
+  // Coherent Cemetery & Manor Funerary Monuments & Veranda Urns
+  const cemeteryMonumentSpecs: Array<['obelisk' | 'urn' | 'shrine', number, number, number]> = [
+    ['urn', 39.0, 14.5, 0],
+    ['obelisk', 49.5, -3.0, 0],
+    ['shrine', 43.0, 34.5, Math.PI],
+    ['urn', 50.5, 29.0, 0],
+    ['urn', 65.6, -6.5, -Math.PI / 2],
+    ['urn', 65.6, 10.5, -Math.PI / 2],
+  ];
+  cemeteryMonumentSpecs.forEach(([variant, mx, mz, rotY]) => {
+    const monument = createCemeteryMonument(mats, variant);
+    monument.position.set(mx, 0, mz);
+    monument.rotation.y = rotY;
+    scene.add(monument);
+    addVolume(mx, 0, variant === 'urn' ? 2.2 : 3.4, mz, 1.45, 1.45, true, false);
+  });
+
+  // Southern Cemetery <-> Southern Boulevard Wrought-Iron Escape Gate & Flanking Railings (z = 44.5)
+  addIronGateTransition(44.0, 44.5, 7.6, 4.1, 0);
+  const southCemThreshold = createThresholdBollards(mats, 6.4, 'crimson');
+  southCemThreshold.position.set(44.0, 0, 44.5);
+  scene.add(southCemThreshold);
+  [37.4, 50.6].forEach((fx) => {
+    const f = createWroughtIronFence(5.0, mats, 1.95);
+    f.position.set(fx, 0, 44.5);
+    scene.add(f);
+    addVolume(fx, 0, 2.1, 44.5, 5.0, 0.65, false, false);
+  });
 
   // Extra Shadow Alley Pockets across the 4 districts
   shadowZones.push(
@@ -1017,24 +1384,24 @@ export function buildGothicCity(
     [v(-10.0, 52.0), v(10.0, 52.0), v(10.0, 54.5), v(-10.0, 54.5)],
   ];
 
-  // Cultists patrol Cathedral North Cloisters & Outer Cemetery Mausoleums (avoiding Safe Crypt!)
+  // Cultists patrol Cathedral North Cloisters & Outer Manor Perimeters (leaving Cemetery Safe Zone clear)
   const cultistRoutes = [
     [v(-18, -68), v(18, -68), v(18, -73), v(-18, -73)],
     [v(-8.5, -34.5), v(8.5, -34.5), v(8.5, -28.0), v(-8.5, -28.0)],
     [v(-56.0, -34.0), v(-38.0, -34.0), v(-38.0, -24.0), v(-56.0, -24.0)],
-    [v(38.0, -22.0), v(58.0, -22.0), v(58.0, -16.0), v(38.0, -16.0)],
+    [v(59.0, -34.0), v(74.0, -34.0), v(74.0, -24.0), v(59.0, -24.0)],
   ];
 
-  // Isolated Nobles stroll Manor Hedged Gardens, North Avenue & Cathedral Terrace
+  // Isolated Nobles stroll Manor Hedged Gardens, North Avenue & Cathedral Terrace (outside Cemetery)
   const nobleRoutes = [
-    [v(56.5, -18.0), v(62.5, -18.0), v(62.5, -8.5), v(56.5, -8.5)],
-    [v(56.5, 2.0), v(62.5, 2.0), v(62.5, 16.0), v(56.5, 16.0)],
+    [v(58.4, -18.0), v(62.8, -18.0), v(62.8, -8.5), v(58.4, -8.5)],
+    [v(58.4, 2.0), v(62.8, 2.0), v(62.8, 16.0), v(58.4, 16.0)],
     [v(28.5, -12, 0.24), v(32.5, -12), v(32.5, 24), v(28.5, 24, 0.24)],
     [v(-6.8, -28.0), v(6.8, -28.0), v(6.8, -19.0), v(-6.8, -19.0)],
     [v(-10.0, 68.5, 0.24), v(18.0, 68.5, 0.24), v(18.0, 66.0), v(-10.0, 66.0)],
   ];
 
-  // Patrol Guards keep streets watched while leaving Safe Crypt (44, 0, 29.5) unpatrolled!
+  // Patrol Guards keep streets & Manor gardens watched while leaving Cemetery Safe Zone completely unpatrolled
   const guardRoutes = [
     [v(-7.5, -26), v(7.5, -26), v(7.5, 10), v(-7.5, 10)],
     [v(-34.5, -16), v(-28.5, -16), v(-28.5, 22), v(-34.5, 22)],
@@ -1042,7 +1409,7 @@ export function buildGothicCity(
     [v(26.5, -22), v(31.5, -22), v(31.5, 34), v(26.5, 34)],
     [v(-11, -14, 4.0), v(11, -14, 4.0)], // Elevated North Skybridge Sentinel
     [v(-44, 52.5), v(44, 52.5), v(44, 62.5), v(-44, 62.5)],
-    [v(53.0, -24), v(59.0, -24), v(59.0, 12), v(53.0, 12)], // Manor West Garden Watch (stops north of Crypt)
+    [v(58.5, -24), v(61.5, -24), v(61.5, 12), v(58.5, 12)], // Manor West Garden Watch (strictly east of Cemetery)
     [v(-20, -69), v(20, -69), v(20, -65.5), v(-20, -65.5)],
     [v(-24, 42.5), v(24, 42.5), v(24, 46.0), v(-24, 46.0)],
   ];
@@ -1067,6 +1434,7 @@ export function buildGothicCity(
     coffinPos,
     safeSpawnPos,
     cryptBounds,
+    cemeteryBounds,
     altarGroup,
     citizenRoutes,
     beggarRoutes,

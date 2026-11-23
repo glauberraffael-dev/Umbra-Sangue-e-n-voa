@@ -65,16 +65,20 @@ export function VictoryModal({ hud, onNextNight, onOpenGrimoire }: VictoryModalP
     <div className="fixed inset-0 z-30 flex items-center justify-center p-4 bg-[#05070e]/88">
       <div className="w-full max-w-lg bg-[#0b0e18] border border-[#7f1d1d] p-8 text-center shadow-2xl">
         <div className="text-[11px] uppercase tracking-[0.24em] text-[#ef4444] mb-2">
-          Domínio Noturno Alcançado
+          {hud.canCompleteNight ? 'Domínio Noturno Alcançado' : 'Retorno Seguro à Cripta'}
         </div>
         <h2 className="font-gothic text-3xl tracking-[0.14em] uppercase text-[#f8f5ef] mb-3">
-          Noite {hud.nightNumber} Conquistada
+          {hud.canCompleteNight
+            ? `Noite ${hud.nightNumber} Conquistada`
+            : `Noite ${hud.nightNumber} Encerrada`}
         </h2>
         <p className="text-sm text-[#a6b0cc] mb-6">
-          Você retornou ao caixão da Cripta antes da aurora, preservou sua Essência e consolidou seu território em Ravencroft.
+          {hud.canCompleteNight
+            ? 'Você retornou ao caixão da Cripta antes da aurora, preservou sua Essência e consolidou seu território em Ravencroft.'
+            : 'Você se recolheu ao caixão da Cripta a tempo, consolidou a Essência coletada e descansou antes do amanhecer.'}
         </p>
 
-        <div className="grid grid-cols-3 gap-3 mb-7 bg-[#080a12] border border-[#242a3d] p-4">
+        <div className="grid grid-cols-3 gap-3 mb-4 bg-[#080a12] border border-[#242a3d] p-4">
           <div>
             <div className="text-[10px] uppercase tracking-wider text-[#8590ad]">Total Presas</div>
             <div className="text-xl font-bold tabular-nums text-[#f1ede4]">{hud.totalKills}</div>
@@ -84,10 +88,36 @@ export function VictoryModal({ hud, onNextNight, onOpenGrimoire }: VictoryModalP
             <div className="text-xl font-bold tabular-nums text-[#fca5a5]">{hud.noblesDrained}</div>
           </div>
           <div>
-            <div className="text-[10px] uppercase tracking-wider text-[#8590ad]">Essência</div>
+            <div className="text-[10px] uppercase tracking-wider text-[#8590ad]">Essência Total</div>
             <div className="text-xl font-bold tabular-nums text-[#94b8ff]">{hud.essence}</div>
           </div>
         </div>
+
+        {hud.lastNightSummary && (
+          <div className="grid grid-cols-3 gap-2 mb-6 bg-[#070910] border border-[#1f2538] px-3 py-2.5 text-center">
+            <div>
+              <div className="text-[9.5px] uppercase tracking-wider text-[#7c85a2]">Consolidado</div>
+              <div className="text-sm font-bold tabular-nums text-[#fcd34d]">
+                +{hud.lastNightSummary.essenceConsolidated}
+                {hud.lastNightSummary.quotaBonus > 0 && (
+                  <span className="text-[10px] text-[#86efac] ml-1">(+{hud.lastNightSummary.quotaBonus})</span>
+                )}
+              </div>
+            </div>
+            <div>
+              <div className="text-[9.5px] uppercase tracking-wider text-[#7c85a2]">Vítimas Noite</div>
+              <div className="text-sm font-bold tabular-nums text-[#f1ede4]">
+                {hud.lastNightSummary.kills}/{hud.lastNightSummary.quota}
+              </div>
+            </div>
+            <div>
+              <div className="text-[9.5px] uppercase tracking-wider text-[#7c85a2]">Infâmia</div>
+              <div className="text-sm font-bold tabular-nums text-[#86efac]">
+                -{hud.lastNightSummary.infamyReliefPct}%
+              </div>
+            </div>
+          </div>
+        )}
 
         <div className="flex flex-col sm:flex-row gap-3">
           <button
